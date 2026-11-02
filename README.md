@@ -3,8 +3,17 @@
 The Open Exchange is a distributable application host for 1Color token swaps. It runs on
 [skein](https://github.com/shruggr/skein)'s host, used as a library. The AMM itself is a
 library, [skein-amm](https://github.com/shruggr/skein-amm): the token app, its programs and
-the page library. Open Exchange adds the host program, the `swap` app, the images and the
-setup. The design is in shruggr/open-exchange#1 and shruggr/skein#164.
+the page library. Open Exchange adds the host program, the `swap` app and the images.
+
+## Run it
+
+```
+npx open-exchange
+```
+
+Then open http://127.0.0.1:8100, connect your wallet (Yours) and claim the exchange on Settings.
+
+Nothing needs setting. The first start takes a few minutes: it syncs the block headers. The design is in shruggr/open-exchange#1 and shruggr/skein#164.
 
 ## The shape
 
@@ -12,11 +21,11 @@ setup. The design is in shruggr/open-exchange#1 and shruggr/skein#164.
   - It records the admin's decisions as facts under its own heads.
   - It emits each fact as an event.
   - It asks nothing of anyone, and nothing answers back.
-  - `setup` makes it, born owned by the host's key (root): the host can always update its
+  - The first run makes it, born owned by the host's key (root): the host can always update its
     pages. The first wallet to claim it (Settings: "Claim this exchange") becomes its ADMIN:
     the host grants it the role `amm.admin`, which configures and enables; it is not root.
-    Someone else got there first: set up again in a fresh `SKEIN_HOME`.
-- **The host** (`open-exchange run`): skein's host, `skein-host run`, plus its wiring for
+    Someone else got there first: start again in a fresh `SKEIN_HOME`.
+- **The host** (`open-exchange`, the same as `open-exchange run`): skein's host, `skein-host run`, plus its wiring for
   swap's events.
 - **The token instances**: one per enabled token, at `<origin>/@<tokenId>`.
   - Each comes from the image `token`, which installs skein-amm's token app.
@@ -24,7 +33,7 @@ setup. The design is in shruggr/open-exchange#1 and shruggr/skein#164.
   - Each takes its deploy BEEF as an event on the token app's route.
 - **discovery**: the 1Color discovery topic `tm_color` and its lookup `ls_color`.
   - It comes from the image `discovery`, which installs skein-1color.
-  - `setup` makes it, born owned by the host's key: no claim.
+  - The first run makes it, born owned by the host's key: no claim.
   - The Settings switch only starts and stops it.
 
 ## The events (swap's app `amm`, box `amm/admin`, the admin's or root's messages)
@@ -62,7 +71,7 @@ When `token-enabled` names a token whose instance exists:
 
 Every reaction is idempotent and logged.
 
-**At start**, `run` reconciles the host's instance table with swap's heads:
+**At start**, the host reconciles the host's instance table with swap's heads:
 
 - `/amm/tokens`:
   - `enabled` means the instance is made running.
@@ -81,39 +90,41 @@ Reads on swap (anyone):
 ## Requirements
 
 - **Node 24 or later**, on any platform node runs on. Nothing else: no toolchain.
-- **skein 0.2.4**, the npm dependency (`package.json`). Its host is built to JavaScript, and its
+- **skein 0.2.5**, the npm dependency (`package.json`). Its host is built to JavaScript, and its
   kernel is one wasm file the host loads: one machine per active instance on a worker thread,
   every instance a set of the host's one SQLite database (`SKEIN_STORE_SQLITE`, the default
-  `setup` writes). A host.env naming `SKEIN_STORE_ROCKSDB` runs skein's native kernel process
+  the first run writes). A host.env naming `SKEIN_STORE_ROCKSDB` runs skein's native kernel process
   instead; that needs a skein checkout with its kernel built (the hosted shape).
 - **One key** (skein#160): `SKEIN_KEY_FILE`. It owns every instance Open Exchange makes, swap
   included; the wallet that claims swap is its admin.
 - **The images**: this repository's `image/`. Open Exchange sets `SKEIN_IMAGES_DIR` to it.
 
-## Setup and run
+## The first run
 
-```
-npx open-exchange setup
-npx open-exchange run
-```
+`npx open-exchange` (no arguments: `run`) makes, in `$SKEIN_HOME` (default `~/.skein`), whatever
+is missing, then serves:
 
-The first `run` syncs the block header chain from the network before it serves (a few minutes on testnet).
+- `host.env`, if absent, with four settings: the key file (`SKEIN_KEY_FILE`), the host's SQLite
+  database (`SKEIN_STORE_SQLITE=$SKEIN_HOME/store.sqlite`, the wasm kernel), swap at the root
+  (`SKEIN_ROOT_INSTANCE=swap`), and the network (`SKEIN_NETWORK=test`, or the one in the
+  environment at the first run; testnet until mainnet has a hosted exchange).
+- The key file, if absent (mode 0600).
+- The host skein, as `skein-host init` does.
+- `swap` from the image `swap`, owned by the host's key, unclaimed.
+- `discovery` from the image `discovery`, with its `tm_color` and `ls_color` registered by
+  root's messages.
 
-`setup` does the following:
+Everything else is a per-network default in skein's host:
 
-- If `$SKEIN_HOME/host.env` is absent, writes it with one key, the host's SQLite database
-  (`SKEIN_STORE_SQLITE=$SKEIN_HOME/store.sqlite`, the wasm kernel), swap at the root, the network
-  (`SKEIN_NETWORK=test`) and the overlay's bootstrap peer (`SKEIN_LIBP2P_BOOTSTRAP`, baked in until
-  discovery has defaults). There is no headers setting: the host follows the network's Teranode
-  P2P mesh and syncs the chain from its data hub (skein#156). Every other `skein-host` setting
-  (origin, ports, Arcade) may be added.
-- If the key file is absent, makes it (mode 0600).
-- Makes the host skein, as `skein-host init` does.
-- Creates `swap` from the image `swap`, owned by the host's key, unclaimed.
-- Creates `discovery` from the image `discovery`.
-- Registers discovery's `tm_color` and `ls_color` by root's messages.
+- the overlay's bootstrap peer (testnet: the hosted Open Exchange node);
+- the Arcade (testnet: `https://testnet.arcade.1sat.app`). Its callback token is made on the
+  first run and appended to `host.env`;
+- the headers: the host follows the network's Teranode P2P mesh and syncs the chain from its
+  data hub (skein#156). That sync is why the first start takes a few minutes.
 
-Running `setup` again changes nothing that already exists.
+A setting you add to `host.env` (another network, a port, a domain, another Arcade) wins over the
+default. An existing `host.env` is left as it is. A later run makes nothing that exists.
+(`open-exchange setup` is gone since 0.6.0: the first run does it.)
 
 The admin is a claim. Open the pages, connect a wallet and go to Settings. While nobody has
 claimed swap, Settings shows the card "Claim this exchange". The wallet that claims it (its
@@ -124,10 +135,10 @@ claim is refused. `GET <swap>/amm/admin` answers `{claimant, since}`, or `{}`.
 ## Upgrade
 
 ```
-npm install open-exchange@<version>
+npm install -g open-exchange@latest
 ```
 
-then restart the host. At start `run` compares the packaged swap app's version
+(or run `npx open-exchange@latest`), then restart the host. At start the host compares the packaged swap app's version
 (`apps/swap/etc/app.json`) with the one installed in swap (its head `amm/app`) and, when they
 differ, installs the packaged app into swap as the host's key (root), as `skein install` would:
 the pages follow the package. A swap made by open-exchange 0.3.0–0.4.5 has no host root (its
@@ -156,20 +167,24 @@ root is whoever claimed it): `run` logs a warning and leaves its pages as they a
 zig build test                      # the swap program's tests
 zig build bin                       # apps/swap/bin/config.wasm (committed)
 scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.28.0's web/ui + the 1Color pages
-npm install --no-save <dcasegr-skein-0.2.4.tgz>   # skein from its `npm pack` until it is published
+npm install --no-save <dcasegr-skein-0.2.5.tgz>   # skein from its `npm pack` until it is published
 npm run typecheck                   # host/ and scripts/ against node_modules/@dcasegr/skein
 npm run build                       # dist/ (what the package runs; `npm pack` builds it)
-[SKEIN_REPLAY_DIR=<skein checkout>] [SKEIN_EQUIV_STORE=rocksdb|file] npm run accept
+[SKEIN_REPLAY_DIR=<skein checkout>] [SKEIN_EQUIV_STORE=rocksdb|file] [OX_ACCEPT_ZERO=off] npm run accept
 ```
 
 The acceptance runs on the wasm host by default. `SKEIN_REPLAY_DIR` names a skein checkout with
 its native kernel built: every store is then replayed by the native reference. From a package
 install: `node node_modules/open-exchange/dist/scripts/accept/ox-accept.js`.
 
-The acceptance (`scripts/accept/ox-accept.ts`) uses a scratch regtest host. It walks
-through these steps:
+The acceptance (`scripts/accept/ox-accept.ts`) first runs `open-exchange` in a clean
+`SKEIN_HOME` with nothing else set, on the real testnet (minutes: the first header sync; port
+8100 must be free; `OX_ACCEPT_ZERO=off` skips it): `host.env` holds only the first run's four
+settings and a made Arcade token, the log names the testnet Arcade and the overlay bootstrap
+node, swap serves, a wallet claims it. Then it uses a scratch regtest host. It walks through
+these steps:
 
-1. setup: swap and discovery owned by the host's key; `/amm/admin` → `{}`; a stranger's message
+1. the first run: swap and discovery owned by the host's key; `/amm/admin` → `{}`; a stranger's message
    in `amm/admin` runs nothing
 2. the claim by the admin key: `/amm/admin` names it, the host grants `amm.admin`, root stays
    the host's; a second claim refused

@@ -12,7 +12,7 @@
 //       RocksDB/LMDB database: its set cannot be removed, so the handle cannot be created again).
 //       An instance there already: started if stopped, its deploy fed in if it has no token yet.
 //   token-disabled {tokenId}      the instance stopped (disabled; its libp2p node left). Not removed.
-//   discovery-on / discovery-off  the instance `discovery` (made at setup) started / stopped.
+//   discovery-on / discovery-off  the instance `discovery` (made on the first run) started / stopped.
 //   claimed {claimant}            (0.5.0) the first wallet's claim on swap: the role `amm.admin` granted to
 //       the claimant on swap by root's `grant` (the host's key is root on swap: swap is born owned by
 //       it); the claimant configures (the box amm/admin), it is not root. Already granted: nothing sent.
@@ -143,7 +143,7 @@ export class Exchange {
 
   async discovery(on: boolean): Promise<void> {
     const row = this.r.o.db.get(DISCOVERY);
-    if (!row) { this.say(`discovery-${on ? "on" : "off"}: no instance ${DISCOVERY} (open-exchange setup makes it)`); return; }
+    if (!row) { this.say(`discovery-${on ? "on" : "off"}: no instance ${DISCOVERY} (the first run makes it)`); return; }
     if (on === (row.status === "enabled")) { this.say(`discovery-${on ? "on" : "off"}: ${on ? "running" : "stopped"} already`); return; }
     if (on) await this.start(DISCOVERY, DISCOVERY_TOPICS); else await this.stop(DISCOVERY);
     this.say(`discovery-${on ? "on" : "off"}: ${DISCOVERY} ${on ? "started" : "stopped"}`);
@@ -287,7 +287,7 @@ export class Exchange {
   reconcile(): Promise<void> {
     return this.enqueue("reconcile", async () => {
       const swap = this.r.o.db.get(SWAP);
-      if (!swap || swap.status !== "enabled") { this.say(`reconcile: no enabled instance ${SWAP} (open-exchange setup makes it): nothing to reconcile`); return; }
+      if (!swap || swap.status !== "enabled") { this.say(`reconcile: no enabled instance ${SWAP} (the first run makes it): nothing to reconcile`); return; }
       const tokens = await this.swapRead("tokens") as Array<{ tokenId?: string; status?: string }>;
       let events: Map<string, Rec> | undefined;
       for (const t of tokens) {

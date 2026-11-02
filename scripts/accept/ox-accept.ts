@@ -1,9 +1,15 @@
 // open-exchange#1 acceptance: the Open Exchange host on a scratch one-key host (regtest; the wasm kernel
 // over the host's one SQLite database by default — the distributable's shape; RocksDB with the native
-// kernel process with SKEIN_EQUIV_STORE=rocksdb, a native serve per SQLite file with =file), through the commands' own code (host/cli.ts `setup`,
+// kernel process with SKEIN_EQUIV_STORE=rocksdb, a native serve per SQLite file with =file), through the commands' own code (host/cli.ts `firstRun`,
 // `startExchange`) and the front door over HTTP (root's messages by BRC-104, as a wallet sends them).
 //
-//   setup                → swap and discovery born owned by the host's key (0.5.0); /amm/admin {} (unclaimed);
+//   zero config          → `open-exchange` (bin, no arguments) in a clean SKEIN_HOME with NOTHING else set (no network):
+//                          the first run writes host.env (key, SQLite, swap at the root, SKEIN_NETWORK=test — no
+//                          bootstrap line) and the key, makes swap + discovery, then runs: the testnet Arcade with a
+//                          token it made into host.env, the testnet overlay bootstrap (ovh) dialled, the Teranode
+//                          first sync from the network's hub; then a wallet claims swap. Real network (testnet; minutes:
+//                          the first sync). OX_ACCEPT_ZERO=off skips it
+//   the first run        → (regtest) swap and discovery born owned by the host's key (0.5.0); /amm/admin {} (unclaimed);
 //                          discovery serving tm_color and ls_color; a stranger's message in amm/admin runs nothing
 //   the claim            → the admin's own {fn: "claim"} in box `amm/claim` (BRC-104, as the Settings page sends it):
 //                          /amm/admin names it, the host grants it amm.admin; root stays [host]; /skeins?key=<admin>
@@ -23,18 +29,18 @@
 //
 //   [SKEIN_REPLAY_DIR=<skein checkout>] [SKEIN_KERNEL_BIN=<a native kernel>] [SKEIN_EQUIV_STORE=rocksdb|file] node scripts/accept/ox-accept.ts
 //   (built: node dist/scripts/accept/ox-accept.js — what a package install runs)
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as httpServer, type ServerResponse } from "node:http";
 import { createServer } from "node:net";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DISCOVERY, SWAP } from "../../host/exchange.ts";
-import { load, skein, SWAP_APP_DIR, swapAppVersion } from "../../host/skein.ts";
-import { setup, settings, startExchange, type Env, type Running } from "../../host/cli.ts";
+import { load, OX_ROOT, skein, SWAP_APP_DIR, swapAppVersion } from "../../host/skein.ts";
+import { firstRun, main, settings, startExchange, type Env, type Running } from "../../host/cli.ts";
 
 type Sdk = typeof import("@bsv/sdk");
 // @bsv/sdk as skein's own dependency (resolved from the skein package).
@@ -117,6 +123,57 @@ const pushHeader = () => { const i = headers.length; for (const s of streams) s.
 await new Promise<void>((r) => sse.listen(0, "127.0.0.1", r));
 const feedUrl = `http://127.0.0.1:${(sse.address() as { port: number }).port}/headers`;
 
+// ---------------------------------------------------------------- zero config: `open-exchange`, nothing set
+/** `open-exchange` (the bin, no arguments) in a clean SKEIN_HOME with nothing else set; a wallet claims swap; stopped. */
+async function zeroConfig(): Promise<void> {
+  const zhome = join(mkdtempSync(join(tmpdir(), "ox-zero-")), "home");
+  const bin = join(OX_ROOT, "bin", "open-exchange.js");
+  const busy = await new Promise<boolean>((resolve) => { const s = createServer(); s.once("error", () => resolve(true)); s.listen(8100, () => s.close(() => resolve(false))); });
+  if (busy) { check(false, "zero config: port 8100 (the default) is taken on this box: stop what holds it, or OX_ACCEPT_ZERO=off"); return; }
+  const out: string[] = [];
+  const child = spawn(process.execPath, [bin], { env: { HOME: process.env.HOME, PATH: process.env.PATH, SKEIN_HOME: zhome }, stdio: ["ignore", "pipe", "pipe"] });
+  const take = (tag: string) => (b: Buffer) => { for (const l of b.toString("utf8").split("\n").filter(Boolean)) { out.push(`${tag}${l}`); if (process.env.VERBOSE) process.stdout.write(`  z ${tag}${l}\n`); } };
+  child.stdout.on("data", take(""));
+  child.stderr.on("data", take("ERR "));
+  let exited: number | null | undefined;
+  child.on("exit", (c) => { exited = c; });
+  const t0 = Date.now();
+  try {
+    const ready = await until("the first run's ready line", () => exited !== undefined ? "exited" : out.find((l) => /^open-exchange: ready — open http:\/\/127\.0\.0\.1:8100\//.test(l)), 15 * 60_000);
+    check(!!ready && ready !== "exited", `zero config: \`open-exchange\` with only SKEIN_HOME set: ready in ${Math.round((Date.now() - t0) / 1000)} s (${ready ?? "no ready line"})`);
+    const firstLines = out.filter((l) => /^open-exchange: /.test(l) || /Arcade callback token made/.test(l));
+    process.stdout.write(`  the first run's own lines:\n${firstLines.map((l) => `    ${l}`).join("\n")}\n`);
+    if (process.env.OX_ZERO_LOG) writeFileSync(process.env.OX_ZERO_LOG, out.join("\n") + "\n");
+    const henv = existsSync(join(zhome, "host.env")) ? readFileSync(join(zhome, "host.env"), "utf8") : "";
+    const keys = henv.split("\n").filter((l) => /^SKEIN_/.test(l)).map((l) => l.split("=")[0]).sort().join(" ");
+    check(keys === "SKEIN_ARC_TOKEN SKEIN_KEY_FILE SKEIN_NETWORK SKEIN_ROOT_INSTANCE SKEIN_STORE_SQLITE", `zero config: host.env holds only ${keys}`);
+    check(/^SKEIN_NETWORK=test$/m.test(henv) && /^SKEIN_ARC_TOKEN=[0-9a-f]{64}$/m.test(henv) && !/BOOTSTRAP/.test(henv), "zero config: host.env names network test and a made SKEIN_ARC_TOKEN, and no bootstrap line");
+    check(existsSync(join(zhome, "key")) && /^[0-9a-f]{64}$/.test(readFileSync(join(zhome, "key"), "utf8").trim()), "zero config: the host's key made");
+    check(out.some((l) => l.includes("broadcast events → Arcade https://testnet.arcade.1sat.app")), "zero config: the log names the testnet Arcade (the network's default)");
+    check(out.some((l) => /libp2p: the host node, peer .*bootstrap \/dns4\/p2p\.testnet\.openex\.dev\/tcp\/7534\/p2p\/16Uiu2HAmVN7Cc7TrFGVrbdoV1mMGBF8LQBvPZ5trzgPArfagBRSB/.test(l)), "zero config: the host node's bootstrap is the testnet overlay node (ovh), the network's default");
+    const Z = "http://127.0.0.1:8100";
+    const zget = async (p: string) => { const r = await fetch(`${Z}${p}`); return r.status === 200 ? await r.json() as Record<string, unknown> : undefined; };
+    const wk = await zget(`/@${SWAP}/.well-known/skein`) ?? await zget("/.well-known/skein");
+    check(wk?.handle === SWAP && typeof wk.identity === "string", `zero config: swap exists (${JSON.stringify(wk)})`);
+    const disc = await fetch(`${Z}/@${DISCOVERY}/1color/listTopicManagers`);
+    check([200, 404].includes(disc.status) && out.some((l) => /made .*discovery/.test(l)), `zero config: discovery made (stopped until swap's switch: ${disc.status})`);
+    check((await fetch(`${Z}/`)).status === 200, "zero config: GET / serves swap's pages");
+    const zadmin = sk.hostenv.parseKey("1f".repeat(32), "zero admin");
+    await new RawBox(keyWallet(zadmin), `${Z}/@${SWAP}`).send(wk!.identity as string, "amm/claim", { fn: "claim" });
+    const zc = await until("the zero-config claim", async () => { const a = await zget(`/@${SWAP}/amm/admin`) as { claimant?: string } | undefined; return a?.claimant ? a : undefined; }, 60_000);
+    check(zc?.claimant === zadmin.toPublicKey().toString(), `zero config: a wallet claims swap (/amm/admin ${JSON.stringify(zc)})`);
+  } finally {
+    if (exited === undefined) {
+      child.kill("SIGTERM");
+      await until("the zero-config host to stop", () => exited !== undefined ? true : undefined, 120_000);
+      if (exited === undefined) child.kill("SIGKILL");
+    }
+    if (process.env.KEEP) process.stdout.write(`kept ${zhome}\n`); else rmSync(dirname(zhome), { recursive: true, force: true });
+  }
+}
+if ((process.env.OX_ACCEPT_ZERO ?? "").toLowerCase() !== "off") await zeroConfig().catch((e) => check(false, `zero config threw: ${(e as Error).stack}`));
+else process.stdout.write("  (zero config skipped: OX_ACCEPT_ZERO=off)\n");
+
 // ---------------------------------------------------------------- the host
 const home = mkdtempSync(join(tmpdir(), "ox-accept-"));
 const shared = new PrivateKey("0e0e0e", 16);
@@ -164,16 +221,16 @@ try {
   const A = `${dA.id("hex")}_0`;
   const tmA = `tm_color_${A}`, lsA = `ls_color_${A}`, ammA = `ls_amm_${A}`;
 
-  // ------------------------------------------------ setup
+  // ------------------------------------------------ the first run (host.env and the key given: it makes the instances)
   const t0 = Date.now();
-  const code = await setup(sk, env, []);
-  check(code === 0, `open-exchange setup: exit ${code} (${Date.now() - t0} ms)`);
-  check(lines.some((l) => /swap: unclaimed — the first wallet to claim it on Settings becomes its admin/.test(l)), "setup says: swap unclaimed — the first wallet to claim it on Settings becomes its admin");
-  check(lines.some((l) => /made swap .*\(owned by the host's key\)/.test(l)), "setup: swap made, owned by the host's key");
-  const old = await setup(sk, { ...env, err: (l) => lines.push(`ERR ${l}`) }, ["--admin", ADMIN]);
-  check(old === 2, `setup --admin: refused (no such flag; usage, exit ${old})`);
-  const again = await setup(sk, env, []);
-  check(again === 0 && lines.some((l) => /nothing to do \(everything exists\)/.test(l)), "setup again: a no-op (nothing to do)");
+  const fr = await firstRun(sk, env);
+  check(!fr.failed && fr.made.some((m) => m.startsWith(`${SWAP} `)) && fr.made.some((m) => m.startsWith(`${DISCOVERY} `)), `the first run: made ${fr.made.join("; ")} (${Date.now() - t0} ms)`);
+  check(lines.some((l) => /made .*swap \(the pages; owned by the host's key, unclaimed\)/.test(l)), "the first run says: swap made, owned by the host's key, unclaimed");
+  check(readFileSync(join(home, "host.env"), "utf8").includes("SKEIN_ARC_TOKEN=t\n") && !readFileSync(join(home, "host.env"), "utf8").includes("#"), "the given host.env kept as it was (its lines win; nothing appended)");
+  const old = await main(["setup"], { ...env, err: (l) => lines.push(`ERR ${l}`) });
+  check(old === 2 && lines.some((l) => /open-exchange setup: gone since 0\.6\.0/.test(l)), `open-exchange setup: gone (exit ${old})`);
+  const again = await firstRun(sk, env);
+  check(!again.failed && again.made.length === 0, "the first run again: a no-op (everything exists)");
   if (ROCKS) await sleep(1500); // the one-shot's kernel process lets the database go
 
   // ------------------------------------------------ run
