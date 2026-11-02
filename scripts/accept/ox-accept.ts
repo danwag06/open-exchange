@@ -3,17 +3,20 @@
 // kernel process with SKEIN_EQUIV_STORE=rocksdb, a native serve per SQLite file with =file), through the commands' own code (host/cli.ts `setup`,
 // `startExchange`) and the front door over HTTP (root's messages by BRC-104, as a wallet sends them).
 //
-//   setup                → swap exists UNCLAIMED (no root; /.well-known/skein claimed:false), discovery born owned
-//                          by the host's key and serving tm_color and ls_color
-//   the claim            → the admin's own message in box `claim` (BRC-104, as the Settings page sends it): root
-//                          [admin], claimed:true, /skeins?key=<admin> lists swap; a second claim refused
+//   setup                → swap and discovery born owned by the host's key (0.5.0); /amm/admin {} (unclaimed);
+//                          discovery serving tm_color and ls_color; a stranger's message in amm/admin runs nothing
+//   the claim            → the admin's own {fn: "claim"} in box `amm/claim` (BRC-104, as the Settings page sends it):
+//                          /amm/admin names it, the host grants it amm.admin; root stays [host]; /skeins?key=<admin>
+//                          does not list swap; a second claim by another key refused
 //   run                  → reconciled: swap's discovery is off, so discovery stopped
 //   root: defaults terms, then enable {tokenId, beef}   → the host reacts: the instance <id> born owned, its deploy
 //                          event admitted (amm/token), the three names served, beats, the terms sent;
 //                          bare-host /lookup ls_color_<id> routed; /amm/tokens: enabled, no url
-//   disable              → stopped (404 at /@<id>); enable again (no BEEF) → started
+//   disable              → stopped (404 at /@<id>); enable again (no BEEF), by root (the host's key) → started
 //   discovery off / on   → stopped / started
 //   restart the host     → reconcile creates nothing and starts what swap says
+//   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
+//                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
 //   kernel-zig/equiv/replays.ts) when SKEIN_REPLAY_DIR names a skein checkout with its kernel built;
 //   a store the wasm kernel wrote is then checked against the native kernel's replay of it
@@ -24,13 +27,13 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as httpServer, type ServerResponse } from "node:http";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DISCOVERY, SWAP } from "../../host/exchange.ts";
-import { load, skein } from "../../host/skein.ts";
+import { load, skein, SWAP_APP_DIR, swapAppVersion } from "../../host/skein.ts";
 import { setup, settings, startExchange, type Env, type Running } from "../../host/cli.ts";
 
 type Sdk = typeof import("@bsv/sdk");
@@ -142,14 +145,14 @@ const R = `http://127.0.0.1:${port}`;
 const get = async (path: string, host?: string) => { const r = await fetch(`${R}${path}`, host ? { headers: { host } } : {}); return { status: r.status, text: await r.text() }; };
 const getJson = async (path: string) => { const r = await get(path); return r.status === 200 ? JSON.parse(r.text) : undefined; };
 const { localTarget } = await skein<typeof import("@dcasegr/skein/dist/client/target.js")>("src/client/target.ts");
-/** An instance's root keys, read from its store (running or stopped), sorted. */
-const rootOf = async (_x: Running, h: string) => {
+/** An instance's holders of `role` (root by default), read from its store (running or stopped), sorted. */
+const rootOf = async (_x: Running, h: string, role = "root") => {
   const t = localTarget(settings(sk, env).vars, h, keyWallet(admin));
   try {
     const v = await t.view();
     const root = v.heads.find((x) => x.name === "grants")?.root;
     const g = root ? await v.store.get(root) as { roles?: Record<string, Uint8Array[]> } : undefined;
-    return (g?.roles?.root ?? []).map((b) => Buffer.from(b).toString("hex")).sort();
+    return (g?.roles?.[role] ?? []).map((b) => Buffer.from(b).toString("hex")).sort();
   } finally { await t.close(); }
 };
 const stores: Array<{ spec: string; h: string }> = [];
@@ -165,7 +168,8 @@ try {
   const t0 = Date.now();
   const code = await setup(sk, env, []);
   check(code === 0, `open-exchange setup: exit ${code} (${Date.now() - t0} ms)`);
-  check(lines.some((l) => /swap: unclaimed — the first wallet to claim it on Settings is root/.test(l)), "setup says: swap unclaimed — the first wallet to claim it on Settings is root");
+  check(lines.some((l) => /swap: unclaimed — the first wallet to claim it on Settings becomes its admin/.test(l)), "setup says: swap unclaimed — the first wallet to claim it on Settings becomes its admin");
+  check(lines.some((l) => /made swap .*\(owned by the host's key\)/.test(l)), "setup: swap made, owned by the host's key");
   const old = await setup(sk, { ...env, err: (l) => lines.push(`ERR ${l}`) }, ["--admin", ADMIN]);
   check(old === 2, `setup --admin: refused (no such flag; usage, exit ${old})`);
   const again = await setup(sk, env, []);
@@ -177,26 +181,37 @@ try {
   const r = x.host.router;
   await x.exchange.idle();
   keep(x, SWAP); keep(x, DISCOVERY);
-  check((await rootOf(x, SWAP)).length === 0, `swap: unclaimed after setup — nobody holds root (${(await rootOf(x, SWAP)).map((k) => k.slice(0, 8)).join(", ") || "none"})`);
+  check(lines.some((l) => l.includes(`swap: pages at ${swapAppVersion()} (the package's)`)), `run: swap's pages at the package's version (${swapAppVersion()}): nothing installed`);
+  check((await rootOf(x, SWAP)).join() === SHARED, `swap: born owned by the host's key — root [host] (${(await rootOf(x, SWAP)).map((k) => k.slice(0, 8)).join(", ")})`);
   check((await rootOf(x, DISCOVERY)).join() === SHARED, "discovery: born owned by the host's key");
   const card = async (path: string) => await getJson(path) as { handle?: string; identity?: string; claimed?: boolean } | undefined;
   const swapId = x.db.get(SWAP)!.identity!;
-  const c0 = await card("/.well-known/skein"), c0at = await card(`/@${SWAP}/.well-known/skein`);
-  check(c0?.handle === SWAP && c0.identity === swapId && c0.claimed === false && c0at?.claimed === false, `GET /.well-known/skein at swap (the bare host's root instance, and /@swap/): claimed false (${JSON.stringify(c0)})`);
+  const c0 = await card("/.well-known/skein");
+  check(c0?.handle === SWAP && c0.identity === swapId && c0.claimed === true, `GET /.well-known/skein at swap: claimed true (the host holds root) (${JSON.stringify(c0)})`);
+  check(JSON.stringify(await getJson(`/@${SWAP}/amm/admin`)) === "{}" && JSON.stringify(await getJson("/amm/admin")) === "{}", "GET /amm/admin (bare host and /@swap/): {} — no claimant");
   const held = async (key: string) => (await getJson(`/skeins?key=${key}`) as Array<{ handle: string }> | undefined)?.map((h) => h.handle) ?? [];
-  check((await held(ADMIN)).length === 0 && !(await held(SHARED)).includes(SWAP), `/skeins?key=: the admin holds nothing yet, nor does the host's key hold swap (${(await held(SHARED)).join(", ") || "none listed"})`);
+  check((await held(ADMIN)).length === 0 && (await held(SHARED)).includes(SWAP), `/skeins?key=: the admin holds nothing; the host's key holds swap (${(await held(SHARED)).join(", ")})`);
 
-  // ------------------------------------------------ the claim: the admin's own message in box `claim`, as the Settings page sends it
-  await new RawBox(keyWallet(admin), `${R}/@${SWAP}`).send(swapId, "claim", {});
-  const claimed = await until("swap claimed", async () => (await rootOf(x!, SWAP)).length ? true : undefined);
-  check(!!claimed && (await rootOf(x, SWAP)).join() === ADMIN, `the claim by the admin key: root on swap = [admin] (${(await rootOf(x, SWAP)).map((k) => k.slice(0, 8)).join(", ")})`);
-  check((await card("/.well-known/skein"))?.claimed === true, "GET /.well-known/skein at swap: claimed true");
-  check((await held(ADMIN)).join() === SWAP, `/skeins?key=<admin>: [${(await held(ADMIN)).join(", ")}]`);
-  const other = new PrivateKey("4444", 16);
-  await new RawBox(keyWallet(other), `${R}/@${SWAP}`).send(swapId, "claim", {}).catch(() => undefined);
+  // ------------------------------------------------ the gate: a stranger's message in amm/admin runs nothing
+  const other = sk.hostenv.parseKey("0d".repeat(32), "other");
+  const OTHER = other.toPublicKey().toString();
+  await new RawBox(keyWallet(other), `${R}/@${SWAP}`).send(swapId, "amm/admin", { fn: "defaults", args: { market: { minCommissionBps: 9 } } });
   await r.settled();
   await (await r.hydrate(SWAP)).kernel.idle();
-  check((await rootOf(x, SWAP)).join() === ADMIN && (await held(other.toPublicKey().toString())).length === 0, `a second claim by another key: refused, root unchanged (${(await rootOf(x, SWAP)).map((k) => k.slice(0, 8)).join(", ")})`);
+  check(JSON.stringify(await getJson(`/@${SWAP}/amm/defaults`)) === "{}", `a stranger's defaults in amm/admin (unclaimed swap): gated, nothing written (${JSON.stringify(await getJson(`/@${SWAP}/amm/defaults`))})`);
+
+  // ------------------------------------------------ the claim: the admin's own {fn: "claim"} in box amm/claim, as the Settings page sends it
+  await new RawBox(keyWallet(admin), `${R}/@${SWAP}`).send(swapId, "amm/claim", { fn: "claim" });
+  const claimedBy = await until("swap's /amm/admin names the admin", async () => { const a = await getJson(`/@${SWAP}/amm/admin`) as { claimant?: string } | undefined; return a?.claimant ? a : undefined; });
+  check(claimedBy?.claimant === ADMIN && typeof (claimedBy as { since?: unknown }).since === "number", `the claim by the admin key: /amm/admin ${JSON.stringify(claimedBy)}`);
+  const granted = await until("amm.admin granted", async () => { await x!.exchange.idle(); const g = await rootOf(x!, SWAP, "amm.admin"); return g.length ? g : undefined; });
+  check(granted?.join() === ADMIN && lines.some((l) => l.includes(`claimed: amm.admin on swap granted to ${ADMIN}`)), `the host reacted to claimed: amm.admin on swap = [admin] (${granted?.map((k) => k.slice(0, 8)).join(", ")})`);
+  check((await rootOf(x, SWAP)).join() === SHARED && !(await held(ADMIN)).includes(SWAP), `the admin is not root: root [host]; /skeins?key=<admin> does not list swap ([${(await held(ADMIN)).join(", ")}])`);
+  await new RawBox(keyWallet(other), `${R}/@${SWAP}`).send(swapId, "amm/claim", { fn: "claim" });
+  await r.settled();
+  await (await r.hydrate(SWAP)).kernel.idle();
+  await x.exchange.idle();
+  check((await getJson(`/@${SWAP}/amm/admin`) as { claimant?: string }).claimant === ADMIN && (await rootOf(x, SWAP, "amm.admin")).join() === ADMIN && !(await rootOf(x, SWAP, "amm.admin")).includes(OTHER) && (await held(OTHER)).length === 0, "a second claim by another key: refused — /amm/admin and amm.admin unchanged");
   check(x.db.get(DISCOVERY)?.status === "disabled", `run: reconciled — swap's discovery is off, discovery stopped (${x.db.get(DISCOVERY)?.status})`);
   check((await get("/")).status === 200 && /<html/i.test((await get("/")).text), "GET / at the bare host: swap's pages (SKEIN_ROOT_INSTANCE)");
   check(JSON.stringify(await getJson(`/@${SWAP}/amm/tokens`)) === "[]" && JSON.stringify(await getJson(`/@${SWAP}/amm/discovery`)) === '{"on":false}', "swap: /amm/tokens [] and /amm/discovery {on:false}");
@@ -244,10 +259,10 @@ try {
   const off = await until("A stopped", async () => (await get(`/@${A}/amm/token`)).status === 404 ? true : undefined);
   await x.exchange.idle();
   check(!!off && x.db.get(A)?.status === "disabled" && (await getJson(`/@${SWAP}/amm/tokens`))[0].status === "disabled", "disable: swap's row disabled; the instance stopped (404 at /@<A>)");
-  await send({ fn: "enable", args: { tokenId: A } });
+  await x.exchange.rootMessage(SWAP, "amm/admin", { fn: "enable", args: { tokenId: A } });
   const on = await until("A started", async () => (await get(`/@${A}/amm/token`)).status === 200 ? true : undefined);
   await x.exchange.idle();
-  check(!!on && x.db.get(A)?.status === "enabled", "enable again (no BEEF: swap's kept deploy): started, /@<A>/amm/token 200");
+  check(!!on && x.db.get(A)?.status === "enabled", "enable again by root (the host's key; no BEEF: swap's kept deploy): started, /@<A>/amm/token 200");
   check(!lines.some((l) => /created from image token/.test(l) && false) && lines.filter((l) => /token-enabled: created from image token/.test(l)).length === 1, "…created once");
 
   // ------------------------------------------------ discovery on / off
@@ -288,6 +303,34 @@ try {
   x = await startExchange(sk, settings(sk, env));
   await x.exchange.idle();
   check(x.db.get(A)?.status === "disabled", `restart with the host's table out of step (A enabled there, disabled on swap): reconciled to swap — A ${x.db.get(A)?.status}`);
+
+  // ------------------------------------------------ swap's pages follow the package (an upgrade)
+  const pkgDir = join(mkdtempSync(join(tmpdir(), "ox-accept-app-")), "swap");
+  cpSync(SWAP_APP_DIR, pkgDir, { recursive: true });
+  const bumped = `${swapAppVersion()}-accept`;
+  const mf = JSON.parse(readFileSync(join(pkgDir, "etc/app.json"), "utf8")) as { version: string };
+  mf.version = bumped;
+  writeFileSync(join(pkgDir, "etc/app.json"), `${JSON.stringify(mf, null, 2)}\n`);
+  writeFileSync(join(pkgDir, "www/accept.txt"), "the bumped package\n");
+  await x.stop();
+  x = undefined;
+  if (ROCKS) await sleep(1500);
+  x = await startExchange(sk, settings(sk, env), { swapAppDir: pkgDir });
+  await x.exchange.idle();
+  const ver = async () => { const l = await x!.host.router.hydrate(SWAP); const c = await l.kernel.call("head", "amm/app"); return c ? (await l.kernel.store.get(c as never) as { version?: string }).version : undefined; };
+  check(lines.some((l) => l.includes(`swap: pages updated to ${bumped} (from ${swapAppVersion()}`)) && await ver() === bumped, `restart with a packaged swap app ${bumped}: installed into swap as root (amm/app ${await ver()})`);
+  check((await get("/accept.txt")).text === "the bumped package\n", "…its pages served (GET /accept.txt at the bare host)");
+  check((await getJson(`/@${SWAP}/amm/tokens`) as Array<{ tokenId: string }>).some((t) => t.tokenId === A) && (await getJson(`/@${SWAP}/amm/admin`) as { claimant?: string }).claimant === ADMIN && (await rootOf(x, SWAP, "amm.admin")).join() === ADMIN, "…swap's state kept: A on the list, the claimant, its amm.admin grant");
+  await send({ fn: "defaults", args: { market: { minCommissionBps: 3 } } });
+  check(!!(await until("the admin's defaults after the upgrade", async () => (await getJson(`/@${SWAP}/amm/defaults`) as { market?: { minCommissionBps?: number } })?.market?.minCommissionBps === 3 ? true : undefined)), "…the admin's message in amm/admin runs after the upgrade (defaults market 3)");
+  const n0 = lines.filter((l) => /swap: pages updated to/.test(l)).length;
+  await x.stop();
+  x = undefined;
+  if (ROCKS) await sleep(1500);
+  x = await startExchange(sk, settings(sk, env));
+  await x.exchange.idle();
+  check(lines.filter((l) => /swap: pages updated to/.test(l)).length === n0 + 1 && await ver() === swapAppVersion(), `restart with the package's own app again: installed back (${await ver()})`);
+  rmSync(dirname(pkgDir), { recursive: true, force: true });
 } catch (e) {
   check(false, `threw: ${(e as Error).stack}`);
 } finally {

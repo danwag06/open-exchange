@@ -6,7 +6,8 @@
 //!
 //! **Stepped** (mailbox routes):
 //!
-//!   box `amm/admin` (kernel.beef; the role root gates the four fns):
+//!   box `amm/admin` (kernel.beef; its route's function `configure` gated by the role admin, granted
+//!   as `amm.admin` — root passes anything, so the host's key can too; 0.5.0):
 //!     {fn: "enable", args: {tokenId, beef?}}   the BEEF (the door checked it and handed the
 //!                       envelope; the wire read back, chain.record.wireOf) must be the token id's
 //!                       deploy (tokens.zig `deployOf`); `beef` may be left out for a token already
@@ -19,6 +20,11 @@
 //!     {fn: "defaults", args: {terms?, market?}}   the head `amm/defaults` (tokens.zig `withDefaults`).
 //!     {fn: "discovery", args: {on}}   the head `amm/discovery` `{on, since}` and the event
 //!                       `discovery-on` / `discovery-off` (discovery.zig).
+//!   box `amm/claim` (kernel.beef; its function `claim` gated by no role: any sender; claim.zig):
+//!     {fn: "claim"}   the first: the head `amm/claim` `{claimant: <the sender>, since}` and the
+//!                       event `{event: "claimed", claimant: <hex>}` (the host grants it amm.admin);
+//!                       answered `{fn: "claim", result: {claimant: <hex>}}`. A later one: refused
+//!                       (`claimed`), nothing written, no event.
 //!     Each answered to the sender in that box: `{fn, request, replyTo, result | error}`. A body
 //!     that is itself an answer (`request` / `replyTo` in it: this program's answer looped back
 //!     when root's key is the instance's own, a one-key host) is not a request: nothing runs.
@@ -28,12 +34,14 @@
 //!   tokens    `/tokens`: the enable list, newest first (tokens.zig `tokensJson`)
 //!   defaults  `/defaults`: the defaults, `{terms?, market?}` (tokens.zig `defaultsJson`)
 //!   discovery `/discovery`: `{on, since}`, or `{on: false}` (discovery.zig `json`)
+//!   admin     `/admin`: `{claimant, since}`, or `{}` unclaimed (claim.zig `json`)
 //!   serve     `/` (prefix): the Swap pages, www/ of the app's own tree (skein-sdk `files.serve`)
 const std = @import("std");
 const w = @import("chain");
 const vm = @import("overlay_sk");
 const tokens = @import("tokens.zig");
 const discovery = @import("discovery.zig");
+const claim = @import("claim.zig");
 const app = @import("app");
 const files = @import("files");
 const scbor = @import("sdk_cbor");
@@ -89,6 +97,8 @@ fn call(a: Allocator, in: Value) !void {
         try httpJson(a, 200, try tokens.defaultsJson(a, try headRecord(a, tokens.defaults_head)))
     else if (eql(u8, func, "discovery"))
         try httpJson(a, 200, try discovery.json(a, try headRecord(a, discovery.head)))
+    else if (eql(u8, func, "admin"))
+        try httpJson(a, 200, try claim.json(a, try headRecord(a, claim.head)))
     else if (eql(u8, func, "serve"))
         try servePages(a, arg)
     else
@@ -128,12 +138,17 @@ fn step(a: Allocator, in: Value) !void {
     const args = in.get("args") orelse return error.BadInput;
     const box = args.getText("box") orelse "";
     const body = try s.getValue(a, args.getCid("body") orelse return error.BadInput);
-    if (!eql(u8, box, tokens.admin_box)) return error.BadInput;
+    const is_claim = eql(u8, box, claim.box);
+    if (!is_claim and !eql(u8, box, tokens.admin_box)) return error.BadInput;
     if (tokens.isAnswer(body)) {
         _ = try vm.finish(a, s, try resultRecord(a, "answer", &.{}));
         return;
     }
     const func = body.getText("fn") orelse "";
+    if (is_claim) {
+        if (eql(u8, func, "claim")) return claimSet(a, in, args);
+        return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/claim takes claim"));
+    }
     if (eql(u8, func, "enable")) return enable(a, in, args, body);
     if (eql(u8, func, "disable")) return disable(a, in, args, body);
     if (eql(u8, func, "defaults")) return defaults(a, args, body);
@@ -141,11 +156,11 @@ fn step(a: Allocator, in: Value) !void {
     return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable, defaults and discovery"));
 }
 
-/// Answer root (the message's sender) in the box it wrote to; the thread ends.
+/// Answer the message's sender in the box it wrote to; the thread ends.
 fn answerRoot(a: Allocator, args: Value, op: []const u8, answer: Value) !void {
     if (answer.get("error")) |e| std.log.err("{s}: refused: {s}", .{ op, e.getText("message") orelse "" });
     if (args.getBytes("sender")) |sender| {
-        _ = vm.send(a, sender, tokens.admin_box, answer) catch |e| std.log.err("{s}: the answer is not sent: {s}", .{ op, @errorName(e) });
+        _ = vm.send(a, sender, args.getText("box") orelse tokens.admin_box, answer) catch |e| std.log.err("{s}: the answer is not sent: {s}", .{ op, @errorName(e) });
     }
     _ = try vm.finish(a, vm.store(), try resultRecord(a, op, &.{.{ .key = "answer", .value = answer }}));
 }
@@ -222,4 +237,16 @@ fn discoverySet(a: Allocator, in: Value, args: Value, body: Value) !void {
     try vm.advance(discovery.head, try vm.store().putValue(a, rec));
     _ = try vm.emitEvent(a, try discovery.event(a, on));
     return answerRoot(a, args, "discovery", try tokens.answer(a, "discovery", message, rec));
+}
+
+/// `claim` (box amm/claim, any sender): the first claim recorded and emitted; a later one refused.
+fn claimSet(a: Allocator, in: Value, args: Value) !void {
+    const message = args.getCid("message");
+    const sender = args.getBytes("sender") orelse return answerRoot(a, args, "claim", try tokens.refusal(a, "claim", message, "no-sender", "a claim is a signed message: its sender is the claimant"));
+    if (claim.claimantOf(try headRecord(a, claim.head))) |held| {
+        return answerRoot(a, args, "claim", try tokens.refusal(a, "claim", message, "claimed", try std.fmt.allocPrint(a, "this exchange is claimed: its admin is {s}", .{try claim.hex(a, held)})));
+    }
+    try vm.advance(claim.head, try vm.store().putValue(a, try claim.record(a, sender, now(in))));
+    _ = try vm.emitEvent(a, try claim.event(a, sender));
+    return answerRoot(a, args, "claim", try tokens.answer(a, "claim", message, try claim.result(a, sender)));
 }

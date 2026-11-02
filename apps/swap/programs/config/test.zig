@@ -4,6 +4,7 @@ const std = @import("std");
 const w = @import("chain");
 const tokens = @import("src/tokens.zig");
 const discovery = @import("src/discovery.zig");
+const claim = @import("src/claim.zig");
 const vec = @import("vectors");
 const dagjson = @import("dagjson");
 const scbor = @import("sdk_cbor");
@@ -156,15 +157,22 @@ test "answers: a body naming its request is an answer, not a request" {
     try testing.expect(!tokens.isAnswer(try dagjsonValue(a, "{\"fn\":\"enable\",\"args\":{\"tokenId\":\"x\"}}")));
 }
 
-test "the swap app's manifest: amm; root's enable, disable, defaults, discovery; admin behind kernel.beef; the reads; the pages; no manager" {
+test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box amm/admin), claim open (box amm/claim); the reads incl. /admin; the pages; no manager" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    const root = m.get("roles").?.get("root").?.array;
-    try testing.expectEqual(@as(usize, 4), root.len);
-    for ([_][]const u8{ "enable", "disable", "defaults", "discovery" }, root) |x, g| try testing.expectEqualStrings(x, scbor.Value.str(g).?);
+    try testing.expectEqualStrings("0.5.0", scbor.Value.str(m.get("version")).?);
+    // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
+    // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
+    // anything); claim is listed in no role.
+    const roles = m.get("roles").?;
+    try testing.expectEqual(@as(usize, 1), roles.map.len);
+    const adm = roles.get("admin").?.array;
+    try testing.expectEqual(@as(usize, 1), adm.len);
+    try testing.expectEqualStrings("configure", scbor.Value.str(adm[0]).?);
+    try testing.expect(roles.get("root") == null);
     try testing.expect(m.get("config") == null); // no token image: the host's images are its own
     try testing.expectEqualStrings("chain/1", scbor.Value.str(m.get("requires").?.array[0]).?);
     // Only its own program: no token programs in this tree.
@@ -175,7 +183,16 @@ test "the swap app's manifest: amm; root's enable, disable, defaults, discovery;
         const addr = scbor.Value.str(r.get("address")).?;
         if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "admin")) {
             try testing.expectEqualStrings("kernel.beef", scbor.Value.str(r.get("filters").?.array[0]).?);
+            try testing.expectEqualStrings("config.configure", scbor.Value.str(r.get("handler")).?);
             seen |= 1;
+        }
+        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "claim")) {
+            try testing.expectEqualStrings("config.claim", scbor.Value.str(r.get("handler")).?);
+            seen |= 2;
+        }
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/admin")) {
+            try testing.expectEqualStrings("admin", scbor.Value.str(r.get("filters").?.array[0]).?);
+            seen |= 8;
         }
         // 0.19.0: no listing requests (the box amm/requests and /requests are gone).
         try testing.expect(!std.mem.eql(u8, addr, "requests") and !std.mem.eql(u8, addr, "/requests"));
@@ -187,7 +204,8 @@ test "the swap app's manifest: amm; root's enable, disable, defaults, discovery;
             seen |= 64;
         }
     }
-    try testing.expectEqual(@as(u8, 1 | 4 | 16 | 32 | 64), seen);
+    try testing.expectEqual(@as(u8, 1 | 2 | 4 | 8 | 16 | 32 | 64), seen);
+    try testing.expectEqualStrings("config.admin", scbor.Value.str(m.get("filters").?.get("admin")).?);
     try testing.expect(m.get("filters").?.get("requests") == null);
     try testing.expectEqualStrings("config.discovery", scbor.Value.str(m.get("filters").?.get("discovery")).?);
     try testing.expectEqualStrings(tokens.admin_box, "amm/admin");
@@ -209,4 +227,27 @@ test "discovery: {on} → the record {on, since} and the event discovery-on / di
     try testing.expectEqualStrings("discovery-off", (try discovery.event(a, false)).getText("event").?);
     try testing.expectEqual(@as(usize, 1), (try discovery.event(a, true)).map.len);
     try testing.expectEqualStrings(discovery.head, "amm/discovery");
+}
+
+test "the claim: the first one recorded {claimant, since} and the event claimed {claimant: hex}; /admin; a claimed record names its admin" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("{}", try claim.json(a, null));
+    try testing.expect(claim.claimantOf(null) == null);
+    try testing.expect(claim.claimantOf(try discovery.record(a, true, 1)) == null);
+    const key = [_]u8{0x02} ++ [_]u8{0xab} ** 32;
+    const khex = "02" ++ "ab" ** 32;
+    const rec = try claim.record(a, &key, 500);
+    try testing.expectEqualSlices(u8, &key, claim.claimantOf(rec).?);
+    try testing.expectEqualStrings("{\"claimant\":\"" ++ khex ++ "\",\"since\":500}", try claim.json(a, rec));
+    const ev = try claim.event(a, &key);
+    try testing.expectEqualStrings("claimed", ev.getText("event").?);
+    try testing.expectEqualStrings(khex, ev.getText("claimant").?);
+    try testing.expectEqual(@as(usize, 2), ev.map.len);
+    try testing.expectEqualStrings(khex, (try claim.result(a, &key)).getText("claimant").?);
+    try testing.expectEqualStrings(claim.head, "amm/claim");
+    try testing.expectEqualStrings(claim.box, "amm/claim");
+    // The answer to a claim is an answer (an own answer looped back runs nothing).
+    try testing.expect(tokens.isAnswer(try tokens.answer(a, "claim", &w.store.hashCid(.tx, .{2} ** 32), try claim.result(a, &key))));
 }

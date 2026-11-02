@@ -3,18 +3,19 @@
 // the events its `swap` instance emits (shruggr/skein#164; exchange.ts).
 //
 //   open-exchange run                    the host: skein-host run's router, ports, libp2p node, chain feed,
-//                                        Arcade, pages; swap's events wired; at start the instances
-//                                        reconciled with swap's heads
+//                                        Arcade, pages; swap's events wired; at start the packaged swap
+//                                        app installed into swap when its version differs (the host's key
+//                                        is root there), then the instances reconciled with swap's heads
 //   open-exchange setup                  once, with the host stopped: the one key and host.env (when
 //                                        absent), the host skein (skein-host init's), then `swap` from the
-//                                        image swap, UNCLAIMED (its claim route from anyone: the first
-//                                        wallet to claim it on Settings is root), and `discovery` from the
-//                                        image discovery, owned by the host's key; discovery's topic
+//                                        image swap, and `discovery` from the image discovery, both owned
+//                                        by the host's key (the first wallet to claim swap on Settings
+//                                        becomes its admin: amm.admin, not root); discovery's topic
 //                                        tm_color and lookup ls_color registered by root's messages.
 //                                        Again: a no-op where things exist
 //
-// Open Exchange runs ONE key (skein#160, SKEIN_KEY_FILE): it owns every instance it makes but swap, whose
-// root is whoever claims it. Its images are
+// Open Exchange runs ONE key (skein#160, SKEIN_KEY_FILE): it owns every instance it makes, swap too (0.5.0;
+// David: "The host is the host … The user can issue commands that the host trusts"). Its images are
 // this repository's image/ (SKEIN_IMAGES_DIR is set to it).
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -28,8 +29,8 @@ export interface Env { vars: Vars; out(l: string): void; err(l: string): void }
 
 const USAGE = `usage:
   open-exchange run                     the host (skein-host run's) with swap's events wired; reconciled with swap at start
-  open-exchange setup                   once, host stopped: key + host.env if absent, the host skein, swap (unclaimed: the first
-                                        wallet to claim it on Settings is root) and discovery (owned by the host's key),
+  open-exchange setup                   once, host stopped: key + host.env if absent, the host skein, swap and discovery (both
+                                        owned by the host's key; the first wallet to claim swap on Settings becomes its admin),
                                         discovery's tm_color / ls_color registered
 settings: $SKEIN_HOME/host.env (every SKEIN_* line; the environment wins), as skein-host's`;
 
@@ -65,9 +66,9 @@ export interface Running { host: Awaited<ReturnType<Skein["cli"]["runHost"]>>; e
 /**
  * The host (skein-host run's runHost: the same router options from the same settings) with swap's
  * events wired to the reactions, and the instances reconciled with swap's heads (not awaited here:
- * `exchange.idle()`). `router` options beyond the settings: tests'.
+ * `exchange.idle()`). `router` options beyond the settings and `swapAppDir`: tests'.
  */
-export async function startExchange(sk: Skein, env: Env, o: { router?: Record<string, unknown> } = {}): Promise<Running> {
+export async function startExchange(sk: Skein, env: Env, o: { router?: Record<string, unknown>; swapAppDir?: string } = {}): Promise<Running> {
   const home = sk.hostenv.homeOf(env.vars);
   const key = hostKey(sk, env.vars);
   mkdirSync(home, { recursive: true });
@@ -76,9 +77,10 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   let ex: Exchange | undefined;
   const early: Array<[string, Record<string, unknown>]> = [];
   const host = await sk.cli.runHost(db, env, { router: { ...o.router, appEvent: (h: string, rec: Record<string, unknown>) => { if (ex) ex.event(h, rec); else early.push([h, rec]); } } });
-  ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log: (l) => env.out(`[open-exchange] ${l}`) });
-  env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
+  ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log: (l) => env.out(`[open-exchange] ${l}`), ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
+  env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
   for (const [h, rec] of early.splice(0)) ex.event(h, rec);
+  void ex.updateSwap();
   void ex.reconcile();
   const exchange = ex;
   return { host, exchange, db, stop: async () => { await exchange.idle(); await host.stop(); db.close(); } };
@@ -129,7 +131,7 @@ function defaultHostEnv(home: string): string {
 
 export async function setup(sk: Skein, given: Env, rest: string[]): Promise<number> {
   let positionals: string[];
-  try { ({ positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} })); } catch (e) { given.err(`open-exchange setup: ${(e as Error).message} (no --admin since 0.3.0: the first wallet to claim swap on Settings is root)`); given.err(USAGE); return 2; }
+  try { ({ positionals } = parseArgs({ args: rest, allowPositionals: true, options: {} })); } catch (e) { given.err(`open-exchange setup: ${(e as Error).message} (no --admin since 0.3.0: the first wallet to claim swap on Settings becomes its admin)`); given.err(USAGE); return 2; }
   if (positionals.length) { given.err(USAGE); return 2; }
   const home = sk.hostenv.homeOf(given.vars);
   mkdirSync(home, { recursive: true });
@@ -156,9 +158,16 @@ export async function setup(sk: Skein, given: Env, rest: string[]): Promise<numb
   const ex = new Exchange({ sk, router: r, hostKey: key.identity, hostWallet: key.wallet, log: (l) => env.out(`[open-exchange] ${l}`) });
   const made: string[] = [];
   try {
-    // swap: the Settings and Swap pages, root's decisions (image swap), UNCLAIMED: no owned, no claim, so the
-    // image's claim route stands, from anyone (the key passed is only checked as a key; nothing records it).
-    if (!db.get(SWAP)) { const c = await r.createInstance(SWAP, key.identity, { image: "swap" }); made.push(`${SWAP} ${c.url} (unclaimed)`); }
+    // swap: the Settings and Swap pages, the admin's decisions (image swap), born owned by the host's key (0.5.0):
+    // the host can always update its pages; the first wallet to claim it (the app's box amm/claim) is granted amm.admin.
+    if (!db.get(SWAP)) {
+      const c = await r.createInstance(SWAP, key.identity, { image: "swap", owned: true });
+      made.push(`${SWAP} ${c.url} (owned by the host's key)`);
+      // Born owned, swap boots and steps at once: let it settle before discovery's genesis is written
+      // (the host's one SQLite database: a kernel worker opening it beside a large write can find it locked).
+      await r.settled();
+      await (await r.hydrate(SWAP)).kernel.idle().catch(() => {});
+    }
     else env.out(`open-exchange setup: ${SWAP} exists (${db.get(SWAP)!.status})`);
     // discovery: the 1Color discovery topic (image discovery), born owned, routed by tm_color and ls_color.
     if (!db.get(DISCOVERY)) { const c = await r.createInstance(DISCOVERY, key.identity, { image: "discovery", owned: true, topics: DISCOVERY_TOPICS }); made.push(`${DISCOVERY} ${c.url}`); }
@@ -174,8 +183,10 @@ export async function setup(sk: Skein, given: Env, rest: string[]): Promise<numb
     } else env.out(`open-exchange setup: ${DISCOVERY} is stopped (swap's discovery is off): its registrations are left as they are`);
     for (const m of made) env.out(`open-exchange setup: made ${m}`);
     if (!made.length) env.out("open-exchange setup: nothing to do (everything exists)");
-    env.out(`open-exchange setup: ${SWAP}: ${(await rootOn(r, SWAP)).length ? "claimed" : "unclaimed — the first wallet to claim it on Settings is root"}`);
-    env.out(`open-exchange setup: done · the host's key ${key.identity} owns ${DISCOVERY} · run: open-exchange run`);
+    const adm = await r.dispatch({ method: "GET", url: `${r.origin()}/@${SWAP}/amm/admin`, headers: {}, body: new Uint8Array() });
+    const claimant = adm.status === 200 ? (JSON.parse(new TextDecoder().decode(adm.body)) as { claimant?: string }).claimant : undefined;
+    env.out(`open-exchange setup: ${SWAP}: ${claimant ? `claimed — its admin is ${claimant}` : adm.status === 200 ? "unclaimed — the first wallet to claim it on Settings becomes its admin" : `no /admin read (${adm.status}): its pages are older than this package's (run updates them where the host's key is root)`}`);
+    env.out(`open-exchange setup: done · the host's key ${key.identity} owns ${(await ex.holders(SWAP, "root")).includes(key.identity) ? `${SWAP} and ` : ""}${DISCOVERY} · run: open-exchange run`);
     return 0;
   } catch (e) {
     env.err(`open-exchange setup: ${(e as Error).stack ?? e}`);
@@ -184,15 +195,6 @@ export async function setup(sk: Skein, given: Env, rest: string[]): Promise<numb
     await host.stop();
     db.close();
   }
-}
-
-/** The keys root is held by on an instance (its head `grants`), hex. */
-async function rootOn(r: { hydrate(h: string): Promise<{ kernel: { call(op: string, name: string): Promise<unknown>; store: { get(c: never): Promise<unknown> } } }> }, handle: string): Promise<string[]> {
-  const l = await r.hydrate(handle);
-  const root = await l.kernel.call("head", "grants");
-  if (!root) return [];
-  const g = await l.kernel.store.get(root as never).catch(() => undefined) as { roles?: Record<string, Uint8Array[]> } | undefined;
-  return (g?.roles?.root ?? []).map((k) => Buffer.from(k).toString("hex"));
 }
 
 if (import.meta.main) {

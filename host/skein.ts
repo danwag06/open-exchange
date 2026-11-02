@@ -16,6 +16,12 @@ function rootOf(from: string): string {
 export const OX_ROOT = rootOf(dirname(fileURLToPath(import.meta.url)));
 /** The images Open Exchange creates its instances from (swap, token, discovery). */
 export const IMAGES_DIR = join(OX_ROOT, "image");
+/** The swap app as packaged (the image swap installs it from here; `run` installs a newer one into swap). */
+export const SWAP_APP_DIR = join(OX_ROOT, "apps", "swap");
+/** The packaged swap app's version (its etc/app.json). */
+export function swapAppVersion(dir = SWAP_APP_DIR): string {
+  return (JSON.parse(readFileSync(join(dir, "etc", "app.json"), "utf8")) as { version: string }).version;
+}
 
 /** A module of the skein package, by its source path there (`src/host/cli.ts` → `@dcasegr/skein/dist/host/cli.js`). */
 export async function skein<T>(rel: string): Promise<T> {
@@ -43,15 +49,19 @@ export type StoresMod = typeof import("@dcasegr/skein/dist/host/stores.js");
 export type IndexStoreMod = typeof import("@dcasegr/skein/dist/runtime/index-store.js");
 export type P2PMod = typeof import("@dcasegr/skein/dist/host/p2p.js");
 export type ControlMod = typeof import("@dcasegr/skein/dist/host/control.js");
+export type AdminMod = typeof import("@dcasegr/skein/dist/client/admin.js");
+export type InstallMod = typeof import("@dcasegr/skein/dist/host/install.js");
+export type BootMod = typeof import("@dcasegr/skein/dist/host/boot.js");
 
 /** The skein modules the host uses, loaded once. */
 export async function load() {
-  const [cli, routerMod, instances, hostenv, signer, raw, cid, door, stores, indexStore, p2p, control] = await Promise.all([
+  const [cli, routerMod, instances, hostenv, signer, raw, cid, door, stores, indexStore, p2p, control, admin, install, boot] = await Promise.all([
     skein<Cli>("src/host/cli.ts"), skein<RouterMod>("src/host/router.ts"), skein<InstancesMod>("src/host/instances.ts"),
     skein<HostEnvMod>("src/host/hostenv.ts"), skein<SignerMod>("src/host/signer.ts"), skein<RawMod>("src/client/raw.ts"),
     skein<CidMod>("src/runtime/cid.ts"), skein<DoorMod>("src/host/door-answer.ts"), skein<StoresMod>("src/host/stores.ts"),
     skein<IndexStoreMod>("src/runtime/index-store.ts"), skein<P2PMod>("src/host/p2p.ts"), skein<ControlMod>("src/host/control.ts"),
+    skein<AdminMod>("src/client/admin.ts"), skein<InstallMod>("src/host/install.ts"), skein<BootMod>("src/host/boot.ts"),
   ]);
-  return { cli, routerMod, instances, hostenv, signer, raw, cid, door, stores, indexStore, p2p, control };
+  return { cli, routerMod, instances, hostenv, signer, raw, cid, door, stores, indexStore, p2p, control, admin, install, boot };
 }
 export type Skein = Awaited<ReturnType<typeof load>>;

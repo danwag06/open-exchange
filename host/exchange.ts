@@ -13,15 +13,26 @@
 //       An instance there already: started if stopped, its deploy fed in if it has no token yet.
 //   token-disabled {tokenId}      the instance stopped (disabled; its libp2p node left). Not removed.
 //   discovery-on / discovery-off  the instance `discovery` (made at setup) started / stopped.
+//   claimed {claimant}            (0.5.0) the first wallet's claim on swap: the role `amm.admin` granted to
+//       the claimant on swap by root's `grant` (the host's key is root on swap: swap is born owned by
+//       it); the claimant configures (the box amm/admin), it is not root. Already granted: nothing sent.
+//
+// At start (0.5.0), before the reconcile: the packaged swap app (apps/swap) installed into swap when its
+// version differs from the installed one (swap's head amm/app), as the host's key (root) — the pages
+// follow the package on `npm install open-exchange@<v>` + a restart. Then the reconcile re-grants
+// amm.admin to swap's claimant if a crash came between the claim and the grant.
 //
 // Each reaction is idempotent and logged; they run one at a time, in the order handed over.
-import type { Router, Skein } from "./skein.ts";
+import { SWAP_APP_DIR, swapAppVersion, type Router, type Skein } from "./skein.ts";
 
 export const SWAP = "swap";
 export const DISCOVERY = "discovery";
 /** The swap app's name: the events are its (the record's `app`, the kernel's). */
 export const SWAP_APP = "amm";
 export const TOKEN_IMAGE = "token";
+/** The role swap's claimant is granted (the swap app's role admin, which gates the box amm/admin). */
+export const ADMIN_ROLE = `${SWAP_APP}.admin`;
+const KEY = /^0[23][0-9a-f]{64}$/;
 const TOKEN_ID = /^[0-9a-f]{64}_\d+$/;
 
 export const tokenTopics = (id: string) => [`tm_color_${id}`, `ls_color_${id}`, `ls_amm_${id}`];
@@ -38,6 +49,8 @@ export interface ExchangeOptions {
   hostKey: string;
   hostWallet: import("@dcasegr/skein/dist/host/signer.js").Signer extends { wallet(h: string): infer W } ? W : never;
   log(line: string): void;
+  /** The swap app installed into swap at start when its version differs (default: the package's apps/swap; tests'). */
+  swapAppDir?: string;
 }
 
 export class Exchange {
@@ -65,6 +78,7 @@ export class Exchange {
         case "token-disabled": return this.tokenDisabled(rec);
         case "discovery-on": return this.discovery(true);
         case "discovery-off": return this.discovery(false);
+        case "claimed": return this.claimed(rec);
         default: this.say(`swap: event ${name}: no reaction`); return Promise.resolve();
       }
     };
@@ -135,7 +149,67 @@ export class Exchange {
     this.say(`discovery-${on ? "on" : "off"}: ${DISCOVERY} ${on ? "started" : "stopped"}`);
   }
 
+  /** swap's claim: the claimant granted amm.admin on swap (root's `grant`, signed by the host's key). */
+  async claimed(rec: Rec): Promise<void> {
+    const k = typeof rec.claimant === "string" ? rec.claimant.toLowerCase() : "";
+    if (!KEY.test(k)) { this.say(`claimed: ${JSON.stringify(rec.claimant)} is not an identity key: ignored`); return; }
+    if ((await this.holders(SWAP, ADMIN_ROLE)).includes(k)) { this.say(`claimed: ${k.slice(0, 8)}… holds ${ADMIN_ROLE} on ${SWAP} already`); return; }
+    if (!(await this.holders(SWAP, "root")).includes(this.o.hostKey)) { this.say(`claimed: ${k.slice(0, 8)}… claimed ${SWAP}, but the host's key is not root on ${SWAP} (an install made by 0.3.0–0.4.5): ${ADMIN_ROLE} NOT granted`); return; }
+    await this.rootMessage(SWAP, "grant", { op: "add", role: ADMIN_ROLE, principal: Uint8Array.from(Buffer.from(k, "hex")) });
+    this.say(`claimed: ${ADMIN_ROLE} on ${SWAP} granted to ${k}`);
+  }
+
   // ---------------------------------------------------------------- the steps
+
+  /** The keys (hex) holding `role` on an instance (its head `grants`). */
+  async holders(handle: string, role: string): Promise<string[]> {
+    const l = await this.r.hydrate(handle);
+    const root = await l.kernel.call("head", "grants");
+    if (!root) return [];
+    const g = await l.kernel.store.get(root as never).catch(() => undefined) as { roles?: Record<string, Uint8Array[]> } | undefined;
+    return (g?.roles?.[role] ?? []).map((k) => Buffer.from(k).toString("hex"));
+  }
+
+  /** The swap app's version installed in swap (its head amm/app), or undefined. */
+  async swapVersion(): Promise<string | undefined> {
+    const l = await this.r.hydrate(SWAP);
+    const c = await l.kernel.call("head", `${SWAP_APP}/app`);
+    if (!c) return undefined;
+    const rec = await l.kernel.store.get(c as never).catch(() => undefined) as { version?: string } | undefined;
+    return rec?.version;
+  }
+
+  /**
+   * The packaged swap app into swap when its version differs from the installed one: planned as
+   * `skein install` plans (planInstallApp: objects, the head amm/app, dispatch, start) over swap's store,
+   * each message sent as root's (the host's key). Queued; logged.
+   */
+  updateSwap(): Promise<void> {
+    return this.enqueue("swap pages", async () => {
+      const row = this.r.o.db.get(SWAP);
+      if (!row || row.status !== "enabled") return;
+      const dir = this.o.swapAppDir ?? SWAP_APP_DIR;
+      const want = swapAppVersion(dir), have = await this.swapVersion();
+      if (have === want) { this.say(`swap: pages at ${want} (the package's)`); return; }
+      if (!(await this.holders(SWAP, "root")).includes(this.o.hostKey)) {
+        this.say(`swap: WARNING: the package's pages are ${want}, ${SWAP} runs ${have ?? "none"}, and the host's key is not root on ${SWAP} (an install made by open-exchange 0.3.0–0.4.5): not updated`);
+        return;
+      }
+      const sk = this.o.sk;
+      const tree = await sk.install.readApp(dir);
+      const st = sk.stores.openStoreFile(sk.indexStore.storeSpec(row), { readOnly: true });
+      let plan;
+      try { plan = await sk.admin.planInstallApp(tree, await sk.install.instanceView(st as never), { modules: sk.boot.wasmDirObjects(sk.boot.WASM_DIR) }); } finally { st.close(); }
+      for (const m of plan.messages) await this.rootMessage(SWAP, m.box, m.body as Rec);
+      for (const end = Date.now() + 120_000; ;) {
+        await this.r.loaded.get(SWAP)?.kernel.idle().catch(() => {});
+        if (await this.swapVersion() === want) break;
+        if (Date.now() > end) throw new Error(`swap: amm/app is not ${want} 120 s after the install (${plan.messages.length} messages sent; swap's log says why)`);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      this.say(`swap: pages updated to ${want} (from ${have ?? "none"}; ${plan.messages.length} messages as root)`);
+    });
+  }
 
   /** Start (publish) an instance: the instance manager's start, reused (routed by `topics`). */
   private async start(handle: string, topics: string[]): Promise<void> {
@@ -231,6 +305,9 @@ export class Exchange {
       }
       const d = await this.swapRead("discovery") as { on?: boolean };
       await this.discovery(d.on === true);
+      // swap's claimant holds amm.admin (the grant may have been lost between the claim and the reaction).
+      const adm = await this.swapRead("admin").catch(() => ({})) as { claimant?: string };
+      if (adm.claimant) await this.claimed({ claimant: adm.claimant });
       this.say(`reconcile: ${tokens.filter((t) => t.status === "enabled").length} enabled, ${tokens.filter((t) => t.status === "disabled").length} disabled on swap; discovery ${d.on ? "on" : "off"}`);
     });
   }
