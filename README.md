@@ -127,7 +127,7 @@ answers `claimed`.
 
 | image | installs |
 |---|---|
-| `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.27.0's web/ui); root's route `/` → the pages; no root: the first claim's sender is root |
+| `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.27.1's web/ui); root's route `/` → the pages; no root: the first claim's sender is root |
 | `token` | skein-chain v0.7.1, skein-amm v0.24.1 (tarballs, by tree hash; 0.24.1: skein-overlay 0.20.0 and skein-1color 0.13.1, the settled sync design — announce, then fetch; no wants; every proof published); root's `/submit`, `/lookup` |
 | `discovery` | skein-chain v0.7.1, skein-1color v0.13.1 (tarballs; engine skein-overlay 0.20.0); root's `/submit`, `/lookup` |
 
@@ -136,7 +136,7 @@ answers `claimed`.
 ```
 zig build test                      # the swap program's tests
 zig build bin                       # apps/swap/bin/config.wasm (committed)
-scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.27.0's web/ui + the 1Color pages
+scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.27.1's web/ui + the 1Color pages
 npm install --no-save <dcasegr-skein-0.1.2.tgz>   # skein from its `npm pack` until it is published
 npm run typecheck                   # host/ and scripts/ against node_modules/@dcasegr/skein
 npm run build                       # dist/ (what the package runs; `npm pack` builds it)
