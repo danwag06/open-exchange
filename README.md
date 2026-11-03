@@ -158,7 +158,7 @@ root is whoever claimed it): `run` logs a warning and leaves its pages as they a
 | image | installs |
 |---|---|
 | `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.29.4's web/ui); root's route `/` → the pages; created owned by the host's key |
-| `token` | skein-chain v0.7.1, skein-amm v0.24.1 (tarballs, by tree hash; 0.24.1: skein-overlay 0.20.0 and skein-1color 0.13.1, the settled sync design — announce, then fetch; no wants; every proof published); root's `/submit`, `/lookup` |
+| `token` | skein-chain v0.7.1, skein-amm v0.29.5 (tarballs, by tree hash; 0.29.5: the validator's submission carries the pool's transaction back to proven ones, so the door admits a relayed swap; 0.24.1: skein-overlay 0.20.0 and skein-1color 0.13.1, the settled sync design — announce, then fetch; no wants; every proof published); root's `/submit`, `/lookup` |
 | `discovery` | skein-chain v0.7.1, skein-1color v0.13.1 (tarballs; engine skein-overlay 0.20.0); root's `/submit`, `/lookup` |
 
 ## Build and test
