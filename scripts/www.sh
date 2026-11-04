@@ -15,9 +15,9 @@ have="$(git -C "$AMM_DIR" rev-parse HEAD)"
 (cd "$AMM_DIR/web/engine" && npm ci)
 (cd "$AMM_DIR/web/ui" && npm ci && npx tsc -b && npx vite build --outDir "$OX/apps/swap/www" --emptyOutDir)
 
-TAG=v0.12.1
+TAG=v0.13.4
 URL="https://github.com/shruggr/skein-1color/archive/refs/tags/${TAG}.tar.gz"
-SHA256=7d55df856a4c960d6f9d1d48658d39157f6da8c837c3805037569f85f8be3674
+SHA256=aeb93a79b0eaba7066d31054ea522b1335276d69ce0370a5708d58ddb78d26c7
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 curl -sSfL -o "$tmp/c.tar.gz" "$URL"
