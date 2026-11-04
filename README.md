@@ -157,16 +157,16 @@ root is whoever claimed it): `run` logs a warning and leaves its pages as they a
 
 | image | installs |
 |---|---|
-| `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.31.1's web/ui); root's route `/` → the pages; created owned by the host's key |
-| `token` | skein-chain v0.7.1, skein-amm v0.31.1 (tarballs, by tree hash; 0.31.1: a swap leg refused `pool_spent` is repriced against the pool's newest state and sent once more; 0.31.0: the relay's dialled frame names the token's topic, so a validator whose host runs several instances on one libp2p node gets the stream; 0.29.5: the validator's submission carries the pool's transaction back to proven ones, so the door admits a relayed swap; 0.24.1: skein-overlay 0.20.0 and skein-1color 0.13.1, the settled sync design — announce, then fetch; no wants; every proof published); root's `/submit`, `/lookup` |
-| `discovery` | skein-chain v0.7.1, skein-1color v0.13.1 (tarballs; engine skein-overlay 0.20.0); root's `/submit`, `/lookup` |
+| `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.31.2's web/ui); root's route `/` → the pages; created owned by the host's key |
+| `token` | skein-chain v0.7.1, skein-amm v0.31.2 (tarballs, by tree hash; 0.31.2: skein-overlay 0.20.1 — `rebeat` re-declares each topic's liveness window too, so an instance registered before 0.20.0 drops its 40 s window; 0.31.1: a swap leg refused `pool_spent` is repriced against the pool's newest state and sent once more; 0.31.0: the relay's dialled frame names the token's topic, so a validator whose host runs several instances on one libp2p node gets the stream; 0.29.5: the validator's submission carries the pool's transaction back to proven ones, so the door admits a relayed swap; 0.24.1: skein-overlay 0.20.0 and skein-1color 0.13.1, the settled sync design — announce, then fetch; no wants; every proof published); root's `/submit`, `/lookup` |
+| `discovery` | skein-chain v0.7.1, skein-1color v0.13.2 (tarballs; engine skein-overlay 0.20.1); root's `/submit`, `/lookup` |
 
 ## Build and test
 
 ```
 zig build test                      # the swap program's tests
 zig build bin                       # apps/swap/bin/config.wasm (committed)
-scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.31.1's web/ui + the 1Color pages
+scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.31.2's web/ui + the 1Color pages
 npm install --no-save <dcasegr-skein-0.2.5.tgz>   # skein from its `npm pack` until it is published
 npm run typecheck                   # host/ and scripts/ against node_modules/@dcasegr/skein
 npm run build                       # dist/ (what the package runs; `npm pack` builds it)
