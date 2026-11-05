@@ -21,6 +21,9 @@
       "name": "pools"
     },
     {
+      "name": "history"
+    },
+    {
       "name": "fees"
     },
     {
@@ -44,21 +47,11 @@
       "get": {
         "operationId": "P1",
         "summary": "Every enabled token's live pools",
-        "description": "Every enabled token instance's P2 pools in one array, each row with its `tokenId`. A token whose read fails is left out. With `Accept: text/event-stream` the answer is an event stream (`Cache-Control: no-cache`): the current answer as the first event `pools`, then the answer again each time it changed (sent only when its JSON differs). Each event: `event: pools`, `data: <the JSON answer>`. The stream also sends when a token is enabled or disabled.",
+        "description": "Every enabled token instance's P2 pools in one array, each row with its `tokenId`. A token whose read fails is left out. A plain read (0.13.0: the host-wide event stream is gone; a list page reads this again on an interval or on focus).",
         "tags": [
           "pools"
         ],
-        "parameters": [
-          {
-            "name": "Accept",
-            "in": "header",
-            "required": false,
-            "description": "`text/event-stream` for the stream form.",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+        "parameters": [],
         "responses": {
           "200": {
             "description": "OK",
@@ -99,12 +92,6 @@
                     "validatorPeerId": "16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo"
                   }
                 ]
-              },
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "event: pools\ndata: [{\"tokenId\":\"959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0\",\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"outpoint\":\"277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"bsvReserve\":1000001,\"tokenReserve\":99999950849,\"liquidityFeeBps\":30,\"validationFeeBps\":5,\"commissionBps\":25,\"validatorIdentityKey\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"validatorPeerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}]\n\n"
               }
             },
             "headers": {
@@ -118,7 +105,158 @@
           }
         },
         "x-route": "P1",
-        "x-cache": "state + stream",
+        "x-cache": "state",
+        "x-answered-by": "the Open Exchange host"
+      }
+    },
+    "/amm/stats": {
+      "get": {
+        "operationId": "H4",
+        "summary": "Every enabled token's stats",
+        "description": "Every enabled token instance's H3 `/stats` in one array (`ids`: those enabled tokens only, in the query's order). A token whose read fails is left out.",
+        "tags": [
+          "history"
+        ],
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "description": "Token ids, comma-separated.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Stats"
+                  }
+                },
+                "example": [
+                  {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "price": {
+                      "sats": 20000,
+                      "tokens": 97606
+                    },
+                    "change1h": 125,
+                    "change24h": -310,
+                    "volume24hSats": 41230,
+                    "volume24hTokens": 200811,
+                    "buys24h": 3,
+                    "sells24h": 1,
+                    "lastTradeAt": 1793000000000,
+                    "tvlSats": 2019910,
+                    "tvlTokens": 9902394,
+                    "pools": 2
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          }
+        },
+        "x-route": "H4",
+        "x-cache": "state",
+        "x-answered-by": "the Open Exchange host"
+      }
+    },
+    "/amm/positions": {
+      "get": {
+        "operationId": "H5",
+        "summary": "LP positions across tokens",
+        "description": "Every enabled token instance's P4 `/positions?lp=` rows in one array, each with its `tokenId` (an unknown key answers `closed` with zeros on every token). A token whose read fails is left out.",
+        "tags": [
+          "history"
+        ],
+        "parameters": [
+          {
+            "name": "lp",
+            "in": "query",
+            "required": true,
+            "description": "LP public keys, comma-separated.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "allOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "tokenId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tokenId"
+                        ]
+                      },
+                      {
+                        "$ref": "#/components/schemas/Position"
+                      }
+                    ]
+                  }
+                },
+                "example": [
+                  {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                    "status": "live",
+                    "outpoint": "0da17390c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                    "sats": 60,
+                    "tokens": 150,
+                    "swaps": 2
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "No `lp`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "H5",
+        "x-cache": "state",
         "x-answered-by": "the Open Exchange host"
       }
     },
@@ -126,7 +264,7 @@
       "get": {
         "operationId": "P2",
         "summary": "A token's live pools and its market",
-        "description": "`pools`: the token instance's listed pools whose validator is beating on `tm_color_<token>-live` now (its peer ID from the beat) and whose `commissionBps` is at least the market's `minCommissionBps`; `market` is the instance's P7 market; `validators` is every validator beating on `tm_color_<token>-live` now (identity and peer ID). With `Accept: text/event-stream` the answer is an event stream (`Cache-Control: no-cache`): the current answer as the first event `pools`, then the answer again each time it changed (sent only when its JSON differs). Each event: `event: pools`, `data: <the JSON answer>`.",
+        "description": "`pools`: the token instance's listed pools whose validator is beating on `tm_color_<token>-live` now (its peer ID from the beat) and whose `commissionBps` is at least the market's `minCommissionBps`; `market` is the instance's P7 market; `validators` is every validator beating on `tm_color_<token>-live` now (identity and peer ID). With `Accept: text/event-stream` the answer is an event stream (`Cache-Control: no-cache`): the whole answer once as the first event `pools` (a page starts from it), then ONE event `change` per pool change, `data: <a Change>` \u2014 `{kind, outpoint, pool?, trade?}`: `deploy` (a new pool output whose transaction has no trade row; `pool` its row), `swap` (a new pool output whose transaction has a trade row: `pool` the continuation's row, `trade` the H1 row), `close` (a pool output gone with no successor of its LP key), `rescind` (gone, and the instance's `/positions?lp=` says the LP key's pool is `rescinded`). A change of `market` or `validators` (not a pool change), or a look whose changes cannot be read, sends the whole answer again as `pools`.",
         "tags": [
           "pools"
         ],
@@ -190,7 +328,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "event: pools\ndata: {\"market\":{\"commissionPkh\":\"5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112\",\"minCommissionBps\":1},\"validators\":[{\"identity\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"peerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}],\"pools\":[{\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"outpoint\":\"277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"bsvReserve\":1000001,\"tokenReserve\":99999950849,\"liquidityFeeBps\":30,\"validationFeeBps\":5,\"commissionBps\":25,\"validatorIdentityKey\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"validatorPeerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}]}\n\n"
+                "example": "event: pools\ndata: {\"market\":{\"commissionPkh\":\"5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112\",\"minCommissionBps\":1},\"validators\":[{\"identity\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"peerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}],\"pools\":[{\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"outpoint\":\"277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"bsvReserve\":1000001,\"tokenReserve\":99999950849,\"liquidityFeeBps\":30,\"validationFeeBps\":5,\"commissionBps\":25,\"validatorIdentityKey\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"validatorPeerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}]}\n\nevent: change\ndata: {\"kind\":\"swap\",\"outpoint\":\"0da17390c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"pool\":{\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"outpoint\":\"0da17390c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"bsvReserve\":1019910,\"tokenReserve\":4902394,\"liquidityFeeBps\":30,\"validationFeeBps\":5,\"commissionBps\":25,\"validatorIdentityKey\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"validatorPeerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"},\"trade\":{\"txid\":\"0da17390c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc\",\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"side\":\"buy\",\"amountIn\":20000,\"amountOut\":97606,\"feeLp\":60,\"feeValidator\":10,\"feeCommission\":50,\"bsvReserve\":1019910,\"tokenReserve\":4902394,\"at\":1793000000000,\"height\":null}}\n\n"
               }
             },
             "headers": {
@@ -853,6 +991,442 @@
         "x-answered-by": "amm-p2p"
       }
     },
+    "/@{token}/amm/trades": {
+      "get": {
+        "operationId": "H1",
+        "summary": "A token's trades",
+        "description": "The token's trade rows, newest first. `from \u2264 at < to` (both optional, ms); `limit` 1 to 500 (default 100); `before` the cursor of the page before (`next`); `lp` one LP key's rows (a position's history). `next` is the last row's cursor (hex of `at` (u64 BE) \u2016 txid) when the page is full, else null. With `txid` instead: the one row, 404 when the transaction has none. Swaps admitted before skein-amm 0.36.0 have no row.",
+        "tags": [
+          "history"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "ms, inclusive.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "ms, exclusive.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1 to 500, default 100.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "A page cursor (`next`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lp",
+            "in": "query",
+            "required": false,
+            "description": "One LP public key.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "txid",
+            "in": "query",
+            "required": false,
+            "description": "One Swap's txid: its row alone.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "trades": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Trade"
+                          }
+                        },
+                        "next": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "trades",
+                        "next"
+                      ]
+                    },
+                    {
+                      "$ref": "#/components/schemas/Trade"
+                    }
+                  ]
+                },
+                "example": {
+                  "trades": [
+                    {
+                      "txid": "0da17390c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc",
+                      "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                      "side": "buy",
+                      "amountIn": 20000,
+                      "amountOut": 97606,
+                      "feeLp": 60,
+                      "feeValidator": 10,
+                      "feeCommission": 50,
+                      "bsvReserve": 1019910,
+                      "tokenReserve": 4902394,
+                      "at": 1793000000000,
+                      "height": 1766600
+                    }
+                  ],
+                  "next": null
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter out of shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`txid`: no trade row.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "H1",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p (the pool lookup's trade rows)"
+      }
+    },
+    "/@{token}/amm/candles": {
+      "get": {
+        "operationId": "H2",
+        "summary": "A token's candles",
+        "description": "One candle per NON-EMPTY bucket of the resolution over the trade rows with `from \u2264 at < to`, oldest first, across all pools; computed on read. A window spanning more than 5000 buckets is refused.",
+        "tags": [
+          "history"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          },
+          {
+            "name": "tf",
+            "in": "query",
+            "required": true,
+            "description": "`1m`, `5m`, `15m`, `1h`, `4h` or `1d`.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1h"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "ms, inclusive.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "ms, exclusive.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Candle"
+                  }
+                },
+                "example": [
+                  {
+                    "t": 1792998000000,
+                    "o": {
+                      "sats": 2,
+                      "tokens": 10
+                    },
+                    "h": {
+                      "sats": 3,
+                      "tokens": 10
+                    },
+                    "l": {
+                      "sats": 2,
+                      "tokens": 10
+                    },
+                    "c": {
+                      "sats": 5,
+                      "tokens": 20
+                    },
+                    "volumeSats": 41230,
+                    "volumeTokens": 200811,
+                    "n": 4
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter out of shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "H2",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p (the pool lookup's trade rows)"
+      }
+    },
+    "/@{token}/amm/stats": {
+      "get": {
+        "operationId": "H3",
+        "summary": "A token's stats",
+        "description": "The token at the read's time, from its last 24 h of trade rows and its live pools.",
+        "tags": [
+          "history"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Stats"
+                },
+                "example": {
+                  "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "price": {
+                    "sats": 20000,
+                    "tokens": 97606
+                  },
+                  "change1h": 125,
+                  "change24h": -310,
+                  "volume24hSats": 41230,
+                  "volume24hTokens": 200811,
+                  "buys24h": 3,
+                  "sells24h": 1,
+                  "lastTradeAt": 1793000000000,
+                  "tvlSats": 2019910,
+                  "tvlTokens": 9902394,
+                  "pools": 2
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          }
+        },
+        "x-route": "H3",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p (the pool lookup's trade rows and pools)"
+      }
+    },
+    "/@{token}/amm/color/{tokenId}/holders": {
+      "get": {
+        "operationId": "H6",
+        "summary": "A token's holders",
+        "description": "From color-lookup's balance table on the token's instance (P2PKH value outputs only), largest first; `limit` 1 to 100 (default 100), `skip` 0 to 100000. Outputs indexed before skein-1color 0.15.0 are not counted.",
+        "tags": [
+          "history"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          },
+          {
+            "name": "tokenId",
+            "in": "path",
+            "required": true,
+            "description": "The same token id.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1 to 100, default 100.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "description": "0 to 100000.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Holders"
+                },
+                "example": {
+                  "count": 2,
+                  "rows": [
+                    {
+                      "address": "1KFHE7w8BhaENAswwryaoccDb6qcT6DbYY",
+                      "balance": 4900000
+                    },
+                    {
+                      "address": "1CUNEBjYrCn2y1SdiUMohaKUi4wpP326Lb",
+                      "balance": 97606
+                    }
+                  ]
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "A query out of shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "H6",
+        "x-cache": "state",
+        "x-answered-by": "color-lookup (on the token instance)"
+      }
+    },
     "/@{token}/amm/token": {
       "get": {
         "operationId": "P11",
@@ -1088,7 +1662,9 @@
                   "dec": 5,
                   "iconUrl": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0/icon",
                   "txid": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
-                  "vout": 0
+                  "vout": 0,
+                  "amount": 21000000,
+                  "height": 1764637
                 }
               }
             },
@@ -2047,6 +2623,17 @@
           },
           "vout": {
             "type": "integer"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "The deploy output's supply in base units; 0 for an authority-only deploy (skein-1color 0.15.0)."
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The deploy's block height (where the discovery overlay has it placed); null while unmined (skein-1color 0.15.0)."
           }
         },
         "required": [
@@ -2055,7 +2642,9 @@
           "sym",
           "dec",
           "txid",
-          "vout"
+          "vout",
+          "amount",
+          "height"
         ]
       },
       "UnlistedToken": {
@@ -2071,6 +2660,287 @@
         "required": [
           "tokenId",
           "listed"
+        ]
+      },
+      "Price": {
+        "type": "object",
+        "description": "A price, exact: `sats` satoshis per `tokens` token units (base units both; divide in the client). From one trade's amounts \u2014 a buy `amountIn / amountOut`, a sell `amountOut / amountIn` \u2014 or a pool's reserves.",
+        "properties": {
+          "sats": {
+            "type": "integer"
+          },
+          "tokens": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sats",
+          "tokens"
+        ]
+      },
+      "Trade": {
+        "type": "object",
+        "description": "A Swap's trade row (ls_amm_<token>, one per admitted Swap from skein-amm 0.36.0 on). Amounts are integers in base units; the fees are in the input asset; the reserves the pool's after the Swap; `at` the admitting step's time (ms); `height` the block height where the overlay has the transaction placed, else null.",
+        "properties": {
+          "txid": {
+            "type": "string"
+          },
+          "lpPubKey": {
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "description": "`buy`: sats in, tokens out; `sell`: tokens in."
+          },
+          "amountIn": {
+            "type": "integer"
+          },
+          "amountOut": {
+            "type": "integer"
+          },
+          "feeLp": {
+            "type": "integer"
+          },
+          "feeValidator": {
+            "type": "integer"
+          },
+          "feeCommission": {
+            "type": "integer"
+          },
+          "bsvReserve": {
+            "type": "integer"
+          },
+          "tokenReserve": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "integer"
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "txid",
+          "lpPubKey",
+          "side",
+          "amountIn",
+          "amountOut",
+          "feeLp",
+          "feeValidator",
+          "feeCommission",
+          "bsvReserve",
+          "tokenReserve",
+          "at",
+          "height"
+        ],
+        "example": {
+          "txid": "0da17390c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc",
+          "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+          "side": "buy",
+          "amountIn": 20000,
+          "amountOut": 97606,
+          "feeLp": 60,
+          "feeValidator": 10,
+          "feeCommission": 50,
+          "bsvReserve": 1019910,
+          "tokenReserve": 4902394,
+          "at": 1793000000000,
+          "height": 1766600
+        }
+      },
+      "Candle": {
+        "type": "object",
+        "description": "One non-empty bucket: `t` its start (ms, a multiple of the resolution since the epoch), the first, highest, lowest and last trade's prices, each side's amounts summed, the trade count.",
+        "properties": {
+          "t": {
+            "type": "integer"
+          },
+          "o": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "h": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "l": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "c": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "volumeSats": {
+            "type": "integer"
+          },
+          "volumeTokens": {
+            "type": "integer"
+          },
+          "n": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "t",
+          "o",
+          "h",
+          "l",
+          "c",
+          "volumeSats",
+          "volumeTokens",
+          "n"
+        ]
+      },
+      "Stats": {
+        "type": "object",
+        "description": "A token at the read's time: `price` the last trade's, else the deepest live pool's (most sats) marginal price, else null; the changes in bps (integers, truncated toward zero) from the last trade at or before the window's start, null without one; volumes and counts over the last 24 h of trades; TVL the live pools' reserves summed; `pools` the live pool count.",
+        "properties": {
+          "tokenId": {
+            "type": "string"
+          },
+          "price": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Price"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "change1h": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "change24h": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "volume24hSats": {
+            "type": "integer"
+          },
+          "volume24hTokens": {
+            "type": "integer"
+          },
+          "buys24h": {
+            "type": "integer"
+          },
+          "sells24h": {
+            "type": "integer"
+          },
+          "lastTradeAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tvlSats": {
+            "type": "integer"
+          },
+          "tvlTokens": {
+            "type": "integer"
+          },
+          "pools": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokenId",
+          "price",
+          "change1h",
+          "change24h",
+          "volume24hSats",
+          "volume24hTokens",
+          "buys24h",
+          "sells24h",
+          "lastTradeAt",
+          "tvlSats",
+          "tvlTokens",
+          "pools"
+        ],
+        "example": {
+          "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+          "price": {
+            "sats": 20000,
+            "tokens": 97606
+          },
+          "change1h": 125,
+          "change24h": -310,
+          "volume24hSats": 41230,
+          "volume24hTokens": 200811,
+          "buys24h": 3,
+          "sells24h": 1,
+          "lastTradeAt": 1793000000000,
+          "tvlSats": 2019910,
+          "tvlTokens": 9902394,
+          "pools": 2
+        }
+      },
+      "Holders": {
+        "type": "object",
+        "description": "A token's holders: `count` the addresses with a balance; `rows` largest balance first, `address` the P2PKH address on the instance's network, `balance` in base units. Only P2PKH value outputs count (pools and other contracts do not).",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "address": {
+                  "type": "string"
+                },
+                "balance": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "address",
+                "balance"
+              ]
+            }
+          }
+        },
+        "required": [
+          "count",
+          "rows"
+        ]
+      },
+      "Change": {
+        "type": "object",
+        "description": "One pool change on the token's pools stream (event `change`).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "deploy",
+              "swap",
+              "close",
+              "rescind"
+            ]
+          },
+          "outpoint": {
+            "type": "string",
+            "description": "The new pool output (deploy, swap) or the one gone (close, rescind)."
+          },
+          "pool": {
+            "$ref": "#/components/schemas/LivePool"
+          },
+          "trade": {
+            "$ref": "#/components/schemas/Trade"
+          }
+        },
+        "required": [
+          "kind",
+          "outpoint"
         ]
       }
     }

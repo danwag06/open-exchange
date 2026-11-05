@@ -54,8 +54,6 @@ export interface ExchangeOptions {
   log(line: string): void;
   /** The swap app installed into swap at start when its version differs (default: the package's apps/swap; tests'). */
   swapAppDir?: string;
-  /** 0.11.0: told after a token-enabled or token-disabled reaction (the host-wide pool stream follows, pools.ts). */
-  tokensChanged?(): void;
 }
 
 export class Exchange {
@@ -79,8 +77,8 @@ export class Exchange {
     const name = String(rec.event);
     const run = (): Promise<void> => {
       switch (name) {
-        case "token-enabled": return this.tokenEnabled(rec).finally(() => this.o.tokensChanged?.());
-        case "token-disabled": return this.tokenDisabled(rec).finally(() => this.o.tokensChanged?.());
+        case "token-enabled": return this.tokenEnabled(rec);
+        case "token-disabled": return this.tokenDisabled(rec);
         case "token-terms": return this.tokenTerms(rec);
         case "discovery-on": return this.discovery(true);
         case "discovery-off": return this.discovery(false);
@@ -327,7 +325,6 @@ export class Exchange {
       // swap's claimant holds amm.admin (the grant may have been lost between the claim and the reaction).
       const adm = await this.swapRead("admin").catch(() => ({})) as { claimant?: string };
       if (adm.claimant) await this.claimed({ claimant: adm.claimant });
-      this.o.tokensChanged?.();
       this.say(`reconcile: ${tokens.filter((t) => t.status === "enabled").length} enabled, ${tokens.filter((t) => t.status === "disabled").length} disabled on swap; discovery ${d.on ? "on" : "off"}`);
     });
   }
