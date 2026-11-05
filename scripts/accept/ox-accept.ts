@@ -45,7 +45,7 @@ import { firstRun, main, settings, startExchange, type Env, type Running } from 
 type Sdk = typeof import("@bsv/sdk");
 // @bsv/sdk as skein's own dependency (resolved from the skein package).
 const sdk = await import(pathToFileURL(createRequire(fileURLToPath(import.meta.resolve("@dcasegr/skein/package.json"))).resolve("@bsv/sdk")).href) as Sdk;
-const { LockingScript, MerklePath, P2PKH, PrivateKey, Transaction, UnlockingScript } = sdk;
+const { KeyDeriver, LockingScript, MerklePath, P2PKH, PrivateKey, Transaction, UnlockingScript } = sdk;
 const sk = await load();
 const { RawBox } = sk.raw;
 const { keyWallet } = await skein<typeof import("@dcasegr/skein/dist/wallet.js")>("src/wallet.ts");
@@ -106,6 +106,65 @@ function deploy(seed: number, sym: string, dec: number) {
   const s = new LockingScript().writeOpCode(0x00).writeNumber(21_000_000).writeOpCode(0x6d).writeBin(Array.from(sk.cid.encode({ sym, dec }).bytes)).writeOpCode(0x75);
   t.addOutput({ lockingScript: LockingScript.fromBinary([...s.toBinary(), ...lock.toBinary()]), satoshis: 1 });
   return t;
+}
+
+// ---------------------------------------------------------------- pools (0.11.0: GET /amm/pools, /@<id>/amm/pools)
+// A pool output as skein-amm writes it (src/pool.zig, docs/AMM.md): the 1Color value prefix, the Pool code
+// (its template with the readonly args spliced in at the slots), OP_RETURN, the state (TokenReserve,
+// LpPubKey, ValidatorPubKey, ValidatorIdentity, Nonce, the Affirmation). The template comes from the
+// token app's own tree (src/fixtures/pool_artifact.zig) as the instance holds it.
+const le64 = (v: bigint) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt.asUintN(64, v)); return b; };
+const valueScript = (assetId: Uint8Array, amount: number, lock: InstanceType<typeof LockingScript>) =>
+  LockingScript.fromBinary([...new LockingScript().writeBin(Array.from(assetId)).writeNumber(amount).writeOpCode(0x6d).toBinary(), ...lock.toBinary()]);
+interface PoolTemplate { code: Buffer; slots: Array<{ offset: number; param: number }> }
+function templateOf(zig: string): PoolTemplate {
+  const hex = /script_hex = "([0-9a-f]+)"/.exec(zig)?.[1];
+  const slots = [...zig.matchAll(/\.offset = (\d+), \.param = (\d+)/g)].map((m) => ({ offset: Number(m[1]), param: Number(m[2]) }));
+  if (!hex || !slots.length) throw new Error("pool_artifact.zig: no script_hex / slots");
+  return { code: Buffer.from(hex, "hex"), slots: slots.sort((a, b) => a.offset - b.offset) };
+}
+/** A deploy pool (the lookup's rule: affirmed by its ValidatorIdentity's child keyed by its Nonce), signed by `identity`. */
+function poolScript(t: PoolTemplate, o: { assetId: Uint8Array; reserve: number; sats: number; fees: [number, number, number]; lp: string; identity: InstanceType<typeof PrivateKey> }) {
+  const code: number[] = [];
+  let at = 0;
+  for (const s of t.slots) {
+    if (t.code[s.offset] !== 0x00) throw new Error(`pool template: no placeholder at ${s.offset}`);
+    code.push(...t.code.subarray(at, s.offset));
+    code.push(...(s.param === 6 ? [0x20, ...o.assetId] : new LockingScript().writeNumber(o.fees[s.param - 7]!).toBinary()));
+    at = s.offset + 1;
+  }
+  code.push(...t.code.subarray(at));
+  const nonce = createHash("sha256").update(`pool ${o.lp}`).digest();
+  const child = new KeyDeriver(o.identity).derivePrivateKey([1, "amm pool"], nonce.toString("hex"), "anyone");
+  const lp = Buffer.from(o.lp, "hex"), validator = Buffer.from(child.toPublicKey().toDER() as number[]), identity = Buffer.from(o.identity.toPublicKey().toDER() as number[]);
+  const msg = Buffer.concat([Buffer.from("skein-amm affirm 2"), o.assetId, ...o.fees.map((f) => le64(BigInt(f))), le64(BigInt(o.reserve)), le64(BigInt(o.sats)), lp, validator, identity, nonce]);
+  const der = Buffer.from(child.sign(Array.from(msg)).toDER() as number[]);
+  const state = Buffer.concat([le64(BigInt(o.reserve)), lp, validator, identity, nonce, Buffer.from([der.length]), der]);
+  const prefix = new LockingScript().writeBin(Array.from(o.assetId)).writeNumber(o.reserve).writeOpCode(0x6d).toBinary();
+  return LockingScript.fromBinary([...prefix, ...code, 0x6a, ...state]);
+}
+/** An event stream's events (`event: pools`, data JSON), as they come; `close` ends it. */
+function sseEvents(url: string) {
+  const ac = new AbortController();
+  const got: unknown[] = [];
+  let status = 0;
+  const done = (async () => {
+    const res = await fetch(url, { headers: { accept: "text/event-stream" }, signal: ac.signal });
+    status = res.status;
+    const reader = res.body!.getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += new TextDecoder().decode(value);
+      for (let i = buf.indexOf("\n\n"); i >= 0; i = buf.indexOf("\n\n")) {
+        const ev = buf.slice(0, i); buf = buf.slice(i + 2);
+        const data = /^data: (.*)$/m.exec(ev)?.[1];
+        if (/^event: pools$/m.test(ev) && data !== undefined) got.push(JSON.parse(data));
+      }
+    }
+  })().catch(() => {});
+  return { got, status: () => status, close: () => { ac.abort(); return done; } };
 }
 
 // ---------------------------------------------------------------- the headers feed (SSE, hex), as SKEIN_HEADERS_URL
@@ -311,11 +370,90 @@ try {
   const liveL = await until("ls_amm_A-live", async () => { const v = await getJson(`/@${A}/amm/.live/${ammA}-live`) as unknown[] | undefined; return v?.length ? v : undefined; }, 60_000);
   check(!!liveL, `beats on ls_amm_<A>-live (${liveL?.length ?? 0})`);
 
+  // ------------------------------------------------ pools (0.11.0): the host's GET /@<A>/amm/pools and /amm/pools
+  // Three deploy pools of A: P0 under A's own identity (beating on tm_color_<A>-live), commission 25 — listed;
+  // P1 under a stranger's identity (not beating) — absent; P2 under A's identity, commission 1 < the market's
+  // minimum 2 — absent. Their tokens from a transfer T of A's deploy, their sats from a mined funding F.
+  const idA = x.db.get(A)!.identity!;
+  check(idA === SHARED, `A's identity is the host's key (one-key host): ${idA.slice(0, 8)}…`);
+  const appRec = await kA.store.get(await kA.call("head", "amm/app") as never) as unknown as { tree: never };
+  const tree = await skein<typeof import("@dcasegr/skein/dist/runtime/tree.js")>("src/runtime/tree.ts");
+  const stA = sk.stores.openStoreFile(sk.indexStore.storeSpec(x.db.get(A)!), { readOnly: true });
+  let tpl: PoolTemplate;
+  try { tpl = templateOf(new TextDecoder().decode(await tree.readFile(stA as never, appRec.tree, "src/fixtures/pool_artifact.zig"))); } finally { stA.close(); }
+  const assetId = Buffer.from(dA.id("hex"), "hex").reverse();
+  const hold = new P2PKH().lock(holder.toPublicKey().toHash());
+  const F = new Transaction();
+  F.addInput({ sourceTXID: "f1".repeat(32), sourceOutputIndex: 0, unlockingScript: UnlockingScript.fromHex("51"), sequence: 0xffffffff });
+  for (let i = 0; i < 3; i++) F.addOutput({ lockingScript: hold, satoshis: 50_000 });
+  F.addOutput({ lockingScript: hold, satoshis: 10 });
+  const hF = mineAlone(F);
+  pushHeader();
+  check(!!(await until("A's chain at F's block", async () => { const t = await kA.chainTip(); return t && t.height >= hF ? t : undefined; })), `F (the pools' sats) mined at ${hF}`);
+  const T = new Transaction();
+  T.addInput({ sourceTransaction: dA, sourceOutputIndex: 0, unlockingScriptTemplate: new P2PKH().unlock(holder) });
+  T.addInput({ sourceTransaction: F, sourceOutputIndex: 3, unlockingScriptTemplate: new P2PKH().unlock(holder) });
+  for (let i = 0; i < 3; i++) T.addOutput({ lockingScript: valueScript(assetId, 7_000_000, hold), satoshis: 1 });
+  T.addOutput({ lockingScript: hold, satoshis: 8 });
+  await T.sign();
+  const stranger = new PrivateKey("5151", 16);
+  const lps = [0, 1, 2].map(() => PrivateKey.fromRandom().toPublicKey().toString());
+  const pools = [
+    { identity: shared, commission: 25 },
+    { identity: stranger, commission: 25 },
+    { identity: shared, commission: 1 },
+  ].map((p, k) => {
+    const t = new Transaction();
+    t.addInput({ sourceTransaction: T, sourceOutputIndex: k, unlockingScriptTemplate: new P2PKH().unlock(holder) });
+    t.addInput({ sourceTransaction: F, sourceOutputIndex: k, unlockingScriptTemplate: new P2PKH().unlock(holder) });
+    t.addOutput({ lockingScript: poolScript(tpl, { assetId, reserve: 7_000_000, sats: 50_001, fees: [30, 5, p.commission], lp: lps[k]!, identity: p.identity }), satoshis: 50_001 });
+    return t;
+  });
+  for (const t of pools) await t.sign();
+  const submitA = async (t: InstanceType<typeof Transaction>) => {
+    const r = await fetch(`${R}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([tmA]) }, body: Uint8Array.from(t.toBEEF()) });
+    return { status: r.status, text: await r.text() };
+  };
+  const p2 = `${R}/@${A}/amm/pools`;
+  const s2 = sseEvents(p2);
+  const first2 = await until("the first pools event", () => s2.got.length ? s2.got[0] : undefined, 15_000) as { market?: { minCommissionBps?: unknown }; pools?: unknown[] } | undefined;
+  check(s2.status() === 200 && !!first2 && Array.isArray(first2.pools) && first2.pools.length === 0, `GET /@<A>/amm/pools as an event stream: the first event, no pools yet (${JSON.stringify(first2)})`);
+  const subT = await submitA(T);
+  check(subT.status === 200, `T (A's deploy split in three) submitted to ${tmA.slice(0, 18)}… (${subT.status} ${subT.text.slice(0, 120)})`);
+  const tPools = Date.now();
+  for (const [k, t] of pools.entries()) { const r = await submitA(t); check(r.status === 200, `pool P${k} submitted (${r.status} ${r.text.slice(0, 120)})`); }
+  const listed = await until("ls_amm_A lists the three pools", async () => {
+    const r = await fetch(`${R}/@${A}/amm/lookup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ service: ammA, query: { tokenId: A } }) });
+    const j = await r.json().catch(() => ({})) as { result?: unknown[] };
+    return (j.result?.length ?? 0) === 3 ? j.result : undefined;
+  });
+  check(!!listed, `ls_amm_<A> {tokenId} lists P0, P1 and P2 (${listed?.length ?? 0})`);
+  const p0 = `${pools[0]!.id("hex")}_0`;
+  const g2 = await fetch(p2);
+  const b2 = await g2.json().catch(() => ({})) as { market?: { minCommissionBps?: unknown; commissionPkh?: unknown }; pools?: Array<Record<string, unknown>> };
+  check(g2.status === 200 && g2.headers.get("cache-control") === "public, max-age=5", `GET /@<A>/amm/pools: 200, cache-control ${g2.headers.get("cache-control")}`);
+  check(b2.pools?.length === 1 && b2.pools[0]!.outpoint === p0, `…only P0: P1 (validator not beating) and P2 (commission 1 < the market's 2) absent (${JSON.stringify(b2.pools?.map((p) => p.outpoint))})`);
+  const row0 = b2.pools?.[0];
+  check(!!row0 && row0.validatorIdentityKey === SHARED && row0.validatorPeerId === (liveT?.[0] as { from?: string } | undefined)?.from && row0.lpPubKey === lps[0] && row0.commissionBps === 25, `…P0's row: validator ${String(row0?.validatorIdentityKey).slice(0, 8)}…, peer ${String(row0?.validatorPeerId).slice(0, 12)}…, lpPubKey ${row0?.lpPubKey === lps[0] ? "its LP key" : String(row0?.lpPubKey)} (${JSON.stringify(row0)})`);
+  check(b2.market?.minCommissionBps === 2 && typeof b2.market.commissionPkh === "string", `…the market: ${JSON.stringify(b2.market)}`);
+  const next2 = await until("a pools event with P0", () => s2.got.find((e) => (e as { pools?: Array<{ outpoint?: string }> }).pools?.some((p) => p.outpoint === p0)), 30_000);
+  check(!!next2 && s2.got.length >= 2, `…the stream sent the answer again once it changed (${s2.got.length} events; P0 in it ${Date.now() - tPools} ms after the pools' submission began)`);
+  await s2.close();
+  const g1 = await fetch(`${R}/amm/pools`);
+  const b1 = await g1.json().catch(() => undefined) as Array<Record<string, unknown>> | undefined;
+  check(g1.status === 200 && b1?.length === 1 && b1[0]!.tokenId === A && b1[0]!.outpoint === p0 && g1.headers.get("cache-control") === "public, max-age=5", `GET /amm/pools (the bare host: swap): every enabled token's, each row with its tokenId (${JSON.stringify(b1?.map((p) => `${String(p.tokenId).slice(0, 8)}… ${String(p.outpoint).slice(0, 8)}…`))})`);
+  const s1 = sseEvents(`${R}/amm/pools`);
+  const first1 = await until("the first /amm/pools event", () => s1.got[0], 15_000) as unknown[] | undefined;
+  check(Array.isArray(first1) && first1.length === 1, `GET /amm/pools as an event stream: the first event (${first1?.length ?? "none"} pool)`);
+
   // ------------------------------------------------ disable, enable again
   await send({ fn: "disable", args: { tokenId: A } });
   const off = await until("A stopped", async () => (await get(`/@${A}/amm/token`)).status === 404 ? true : undefined);
   await x.exchange.idle();
   check(!!off && x.db.get(A)?.status === "disabled" && (await getJson(`/@${SWAP}/amm/tokens`))[0].status === "disabled", "disable: swap's row disabled; the instance stopped (404 at /@<A>)");
+  const after1 = await until("/amm/pools without A", () => s1.got.length >= 2 && Array.isArray(s1.got.at(-1)) && (s1.got.at(-1) as unknown[]).length === 0 ? true : undefined, 15_000);
+  check(!!after1, `…the /amm/pools stream after the disable: sent again, A's pools gone (${s1.got.length} events)`);
+  await s1.close();
   await x.exchange.rootMessage(SWAP, "amm/admin", { fn: "enable", args: { tokenId: A } });
   const on = await until("A started", async () => (await get(`/@${A}/amm/token`)).status === 200 ? true : undefined);
   await x.exchange.idle();

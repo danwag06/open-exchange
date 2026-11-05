@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Exchange, DISCOVERY, DISCOVERY_TOPICS, SWAP } from "./exchange.ts";
+import { Pools } from "./pools.ts";
 import { IMAGES_DIR, load, skeinVersion, type Skein } from "./skein.ts";
 
 type Vars = Record<string, string | undefined>;
@@ -60,7 +61,7 @@ export async function main(argv: string[], given: Env): Promise<number> {
 
 // ---------------------------------------------------------------- run
 
-export interface Running { host: Awaited<ReturnType<Skein["cli"]["runHost"]>>; exchange: Exchange; db: InstanceType<Skein["instances"]["HostDb"]>; stop(): Promise<void> }
+export interface Running { host: Awaited<ReturnType<Skein["cli"]["runHost"]>>; exchange: Exchange; pools: Pools; db: InstanceType<Skein["instances"]["HostDb"]>; stop(): Promise<void> }
 
 /**
  * The host (skein-host run's runHost: the same router options from the same settings) with swap's
@@ -75,14 +76,20 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   // Events handed over before the reactions exist (a kernel's start) wait for them.
   let ex: Exchange | undefined;
   const early: Array<[string, Record<string, unknown>]> = [];
-  const host = await sk.cli.runHost(db, env, { router: { ...o.router, appEvent: (h: string, rec: Record<string, unknown>) => { if (ex) ex.event(h, rec); else early.push([h, rec]); } } });
-  ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log: (l) => env.out(`[open-exchange] ${l}`), ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
+  // 0.11.0: the pool reads (pools.ts) — GET /amm/pools and /@<tokenId>/amm/pools, the host's (skein's appRead).
+  let pools: Pools | undefined;
+  const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) => await pools?.appRead(h, route, url, req);
+  const host = await sk.cli.runHost(db, env, { router: { ...o.router, appRead, appEvent: (h: string, rec: Record<string, unknown>) => { if (ex) ex.event(h, rec); else early.push([h, rec]); } } });
+  const log = (l: string) => env.out(`[open-exchange] ${l}`);
+  pools = new Pools(host.router, log);
+  const pl = pools;
+  ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log, tokensChanged: () => pl.tokensChanged(), ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
   env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
   for (const [h, rec] of early.splice(0)) ex.event(h, rec);
   void ex.updateSwap();
   void ex.reconcile();
   const exchange = ex;
-  return { host, exchange, db, stop: async () => { await exchange.idle(); await host.stop(); db.close(); } };
+  return { host, exchange, pools: pl, db, stop: async () => { await exchange.idle(); pl.stop(); await host.stop(); db.close(); } };
 }
 
 async function run(sk: Skein, given: Env, rest: string[]): Promise<number> {
