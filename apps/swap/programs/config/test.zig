@@ -155,6 +155,41 @@ test "the events: token-enabled {tokenId, beef, terms?, market?} (the defaults a
     try testing.expectEqual(@as(usize, 2), off.map.len);
 }
 
+test "terms: a token on the list → the event token-terms {tokenId, terms}; null = market only; unknown token or bad terms refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const tid = "ab" ** 32;
+    const id = tid ++ "_0";
+    const d: tokens.Deploy = .{ .token_id = id, .topic = "tm_color_" ++ id, .lookup = "ls_color_" ++ id };
+    const rec = try tokens.withRow(a, &.{}, try tokens.enabledRow(a, d, 100, .{ .bytes = "BEEF" }));
+    const rows = tokens.rowsOf(rec);
+    const good = (try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":{\"lpFeeBps\":40,\"validatorFeeBps\":6,\"commissionBps\":2}}"))).ok;
+    const ev = try tokens.termsEvent(a, good.token_id, good.terms);
+    try testing.expectEqualStrings("token-terms", ev.getText("event").?);
+    try testing.expectEqualStrings(id, ev.getText("tokenId").?);
+    try testing.expectEqual(@as(u64, 40), ev.get("terms").?.getUint("lpFeeBps").?);
+    try testing.expectEqual(@as(u64, 6), ev.get("terms").?.getUint("validatorFeeBps").?);
+    try testing.expectEqual(@as(u64, 2), ev.get("terms").?.getUint("commissionBps").?);
+    try testing.expectEqual(@as(usize, 3), ev.map.len);
+    // Any id form names the listed token.
+    const dotted = (try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ tid ++ ".0\",\"terms\":null}"))).ok;
+    try testing.expectEqualStrings(id, dotted.token_id);
+    const mo = try tokens.termsEvent(a, dotted.token_id, dotted.terms);
+    try testing.expect(mo.get("terms").? == .null);
+    // A disabled token is still on the list.
+    const off = try tokens.withRow(a, rows, try tokens.updated(a, tokens.find(rows, id).?, .disabled, &.{}, &.{}));
+    try testing.expect((try tokens.termsChange(a, tokens.rowsOf(off), try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":null}"))) == .ok);
+    // Refused: a token not on the list, bad terms, no terms, other keys.
+    const unknown = try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ "cd" ** 32 ++ "_0\",\"terms\":null}"));
+    try testing.expect(unknown == .bad and std.mem.indexOf(u8, unknown.bad, "not on the list") != null);
+    try testing.expect((try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":{\"lpFeeBps\":40}}"))) == .bad);
+    try testing.expect((try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":{\"lpFeeBps\":40,\"validatorFeeBps\":6,\"commissionBps\":10001}}"))) == .bad);
+    try testing.expect((try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\"}"))) == .bad);
+    try testing.expect((try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":null,\"market\":null}"))) == .bad);
+    try testing.expect((try tokens.termsChange(a, rows, null)) == .bad);
+}
+
 test "answers: a body naming its request is an answer, not a request" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -172,7 +207,7 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    try testing.expectEqualStrings("0.11.1", scbor.Value.str(m.get("version")).?);
+    try testing.expectEqualStrings("0.12.0", scbor.Value.str(m.get("version")).?);
     // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
     // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
     // anything); claim is listed in no role.

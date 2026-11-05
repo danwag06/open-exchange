@@ -19,6 +19,8 @@
 //                          event admitted (amm/token), the three names served, beats, the terms sent;
 //                          bare-host /lookup ls_color_<id> routed; /amm/tokens: enabled, no url
 //   disable              → stopped (404 at /@<id>); enable again (no BEEF), by root (the host's key) → started
+//   terms {tokenId, terms} → (0.12.0) the event token-terms; the host sends root's terms to the token instance
+//                          (/@<id>/amm/terms follows; null = market only); a token not on the list refused
 //   discovery off / on   → stopped / started
 //   restart the host     → reconcile creates nothing and starts what swap says
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
@@ -462,6 +464,24 @@ try {
   await x.exchange.idle();
   check(!!on && x.db.get(A)?.status === "enabled", "enable again by root (the host's key; no BEEF: swap's kept deploy): started, /@<A>/amm/token 200");
   check(!lines.some((l) => /created from image token/.test(l) && false) && lines.filter((l) => /token-enabled: created from image token/.test(l)).length === 1, "…created once");
+
+  // ------------------------------------------------ one token's terms (0.12.0): swap's event token-terms → the host's root message to A
+  const termsOf = async () => (await getJson(`/@${A}/amm/terms`) as { validator?: { lpFeeBps?: number; validatorFeeBps?: number; commissionBps?: number } | null } | undefined)?.validator;
+  await send({ fn: "terms", args: { tokenId: A, terms: { lpFeeBps: 40, validatorFeeBps: 6, commissionBps: 3 } } });
+  const tA = await until("A's terms 40/6/3", async () => { const v = await termsOf(); return v && v.lpFeeBps === 40 && v.validatorFeeBps === 6 && v.commissionBps === 3 ? v : undefined; });
+  await x.exchange.idle();
+  check(!!tA && lines.some((l) => l.includes(`${A}: terms 40/6/3 sent`)), `terms {tokenId: A, terms 40/6/3} in amm/admin: the host sent root's terms to A (/@<A>/amm/terms validator ${JSON.stringify(tA)})`);
+  await send({ fn: "terms", args: { tokenId: A, terms: null } });
+  const mo = await until("A market only", async () => (await termsOf()) === null ? true : undefined);
+  await x.exchange.idle();
+  check(!!mo && lines.some((l) => l.includes(`${A}: terms null (market only) sent`)), "terms {tokenId: A, terms: null}: A market only (/@<A>/amm/terms validator null)");
+  const nT = lines.filter((l) => /: terms .* sent/.test(l)).length;
+  await send({ fn: "terms", args: { tokenId: `${"cd".repeat(32)}_0`, terms: null } });
+  await new Promise((res) => setTimeout(res, 1500));
+  await x.exchange.idle();
+  check(lines.filter((l) => /: terms .* sent/.test(l)).length === nT && (await termsOf()) === null, "terms for a token not on the list: refused by swap, no event, nothing sent");
+  await send({ fn: "terms", args: { tokenId: A, terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 } } });
+  check(!!(await until("A's terms back to the defaults", async () => (await termsOf())?.commissionBps === 25 ? true : undefined)), "terms back to 30/5/25 for the rest of the run");
 
   // ------------------------------------------------ discovery on / off
   await send({ fn: "discovery", args: { on: true } });

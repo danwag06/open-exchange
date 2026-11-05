@@ -236,6 +236,26 @@ pub fn withDefaults(a: Allocator, prev: ?Value, args: ?Value) !DefaultsChange {
     return .{ .ok = .{ .map = es.items } };
 }
 
+/// Root's `terms {tokenId, terms}` (0.12.0): one token's validator terms, checked as the defaults'
+/// `terms` are (a map of the three fees, or `null` = market only). The token must be on the list
+/// (enabled or disabled). Nothing is kept here: the token instance's own `amm/terms` is the record.
+pub const TermsChange = union(enum) {
+    ok: struct { token_id: []const u8, terms: Value },
+    bad: []const u8,
+};
+
+pub fn termsChange(a: Allocator, rows: []const Value, args: ?Value) !TermsChange {
+    const want = "want args {tokenId: <txid>_<vout>, terms: {lpFeeBps, validatorFeeBps, commissionBps} | null}";
+    const x = args orelse return .{ .bad = want };
+    if (x != .map) return .{ .bad = want };
+    for (x.map) |e| if (!eql(u8, e.key, "tokenId") and !eql(u8, e.key, "terms")) return .{ .bad = want };
+    const id = (try canonicalId(a, x.getText("tokenId") orelse return .{ .bad = want })) orelse return .{ .bad = want };
+    const t = x.get("terms") orelse return .{ .bad = want };
+    if (t != .null) if (checkTerms(t)) |why| return .{ .bad = why };
+    if (find(rows, id) == null) return .{ .bad = try std.fmt.allocPrint(a, "{s} is not on the list", .{id}) };
+    return .{ .ok = .{ .token_id = id, .terms = t } };
+}
+
 /// The `/defaults` answer's JSON: `{terms?, market?}` (`{}` when none is set).
 pub fn defaultsJson(a: Allocator, rec: ?Value) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
@@ -270,6 +290,16 @@ pub fn disabledEvent(a: Allocator, token_id: []const u8) !Value {
     return map(a, &.{
         .{ .key = "event", .value = .{ .text = "token-disabled" } },
         .{ .key = "tokenId", .value = .{ .text = token_id } },
+    });
+}
+
+/// `{event: "token-terms", tokenId, terms}` (0.12.0): root's terms for one token as a fact for the
+/// host, which sends them to the token instance as root's `terms` message (`terms` a map or null).
+pub fn termsEvent(a: Allocator, token_id: []const u8, terms: Value) !Value {
+    return map(a, &.{
+        .{ .key = "event", .value = .{ .text = "token-terms" } },
+        .{ .key = "tokenId", .value = .{ .text = token_id } },
+        .{ .key = "terms", .value = terms },
     });
 }
 

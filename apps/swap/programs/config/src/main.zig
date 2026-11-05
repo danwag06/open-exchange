@@ -17,6 +17,11 @@
 //!                       same fact again (the host's reaction is idempotent).
 //!     {fn: "disable", args: {tokenId}}   a token on the list: the row `disabled`, the event
 //!                       `{event: "token-disabled", tokenId}`.
+//!     {fn: "terms", args: {tokenId, terms}}   a token on the list (enabled or disabled); `terms`
+//!                       `{lpFeeBps, validatorFeeBps, commissionBps}` (checked as the defaults' are)
+//!                       or null (market only): the event `{event: "token-terms", tokenId, terms}`
+//!                       (the host sends it to the token instance as root's `terms`); nothing kept
+//!                       here: the token instance's `amm/terms` is the record (0.12.0).
 //!     {fn: "defaults", args: {terms?, market?}}   the head `amm/defaults` (tokens.zig `withDefaults`).
 //!     {fn: "discovery", args: {on}}   the head `amm/discovery` `{on, since}` and the event
 //!                       `discovery-on` / `discovery-off` (discovery.zig).
@@ -151,9 +156,10 @@ fn step(a: Allocator, in: Value) !void {
     }
     if (eql(u8, func, "enable")) return enable(a, in, args, body);
     if (eql(u8, func, "disable")) return disable(a, in, args, body);
+    if (eql(u8, func, "terms")) return termsSet(a, args, body);
     if (eql(u8, func, "defaults")) return defaults(a, args, body);
     if (eql(u8, func, "discovery")) return discoverySet(a, in, args, body);
-    return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable, defaults and discovery"));
+    return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable, terms, defaults and discovery"));
 }
 
 /// Answer the message's sender in the box it wrote to; the thread ends.
@@ -214,6 +220,19 @@ fn disable(a: Allocator, in: Value, args: Value, body: Value) !void {
     try saveRow(a, row);
     _ = try vm.emitEvent(a, try tokens.disabledEvent(a, id));
     return answerRoot(a, args, "disable", try tokens.answer(a, "disable", message, try tokens.shown(a, row)));
+}
+
+/// `terms {tokenId, terms}`: the event only.
+fn termsSet(a: Allocator, args: Value, body: Value) !void {
+    const message = args.getCid("message");
+    switch (try tokens.termsChange(a, tokens.rowsOf(try headRecord(a, tokens.tokens_head)), body.get("args"))) {
+        .bad => |why| return answerRoot(a, args, "terms", try tokens.refusal(a, "terms", message, "bad-args", why)),
+        .ok => |c| {
+            const ev = try tokens.termsEvent(a, c.token_id, c.terms);
+            _ = try vm.emitEvent(a, ev);
+            return answerRoot(a, args, "terms", try tokens.answer(a, "terms", message, ev));
+        },
+    }
 }
 
 /// `defaults {terms?, market?}`.

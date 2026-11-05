@@ -12,6 +12,9 @@
 //       RocksDB/LMDB database: its set cannot be removed, so the handle cannot be created again).
 //       An instance there already: started if stopped, its deploy fed in if it has no token yet.
 //   token-disabled {tokenId}      the instance stopped (disabled; its libp2p node left). Not removed.
+//   token-terms {tokenId, terms}  (0.12.0) root's terms for one token: sent to its instance as root's
+//       `terms` message into amm/validator (`terms` a map, or null = market only), as at creation. No
+//       instance: logged, nothing else. Not replayed at start: the instance keeps its own amm/terms.
 //   discovery-on / discovery-off  the instance `discovery` (made on the first run) started / stopped.
 //   claimed {claimant}            (0.5.0) the first wallet's claim on swap: the role `amm.admin` granted to
 //       the claimant on swap by root's `grant` (the host's key is root on swap: swap is born owned by
@@ -78,6 +81,7 @@ export class Exchange {
       switch (name) {
         case "token-enabled": return this.tokenEnabled(rec).finally(() => this.o.tokensChanged?.());
         case "token-disabled": return this.tokenDisabled(rec).finally(() => this.o.tokensChanged?.());
+        case "token-terms": return this.tokenTerms(rec);
         case "discovery-on": return this.discovery(true);
         case "discovery-off": return this.discovery(false);
         case "claimed": return this.claimed(rec);
@@ -141,6 +145,14 @@ export class Exchange {
     if (row.status !== "enabled") { this.say(`${id}: token-disabled: stopped already`); return; }
     await this.stop(id);
     this.say(`${id}: token-disabled: stopped`);
+  }
+
+  /** 0.12.0: one token's terms (root's, on swap) to its instance; the instance's amm/terms is the record. */
+  async tokenTerms(rec: Rec): Promise<void> {
+    const id = typeof rec.tokenId === "string" ? rec.tokenId : "";
+    if (!TOKEN_ID.test(id)) { this.say(`token-terms: ${JSON.stringify(rec.tokenId)} is not a token id: ignored`); return; }
+    if (!this.r.o.db.get(id)) { this.say(`${id}: token-terms: no instance here: nothing sent`); return; }
+    await this.sendTerms(id, (rec.terms ?? null) as Terms | null);
   }
 
   async discovery(on: boolean): Promise<void> {
@@ -259,8 +271,13 @@ export class Exchange {
   /** The defaults the event carried, to a new instance: root's messages (signed by the host's key), `terms` into amm/validator, `market` into amm/amm-p2p. */
   private async terms(id: string, rec: Rec): Promise<void> {
     const terms = rec.terms as Terms | undefined, market = rec.market as Market | undefined;
-    if (terms && typeof terms === "object") await this.rootMessage(id, "amm/validator", { fn: "terms", args: terms }).then(() => this.say(`${id}: terms ${terms.lpFeeBps}/${terms.validatorFeeBps}/${terms.commissionBps} sent`), (e) => this.say(`${id}: terms not taken: ${(e as Error).message}`));
+    if (terms && typeof terms === "object") await this.sendTerms(id, terms);
     if (market && typeof market === "object") await this.rootMessage(id, "amm/amm-p2p", { fn: "market", args: market }).then(() => this.say(`${id}: market minimum ${market.minCommissionBps} sent`), (e) => this.say(`${id}: market not taken: ${(e as Error).message}`));
+  }
+
+  /** Root's `terms` (a map, or null = market only) into the token instance's amm/validator, signed by the host's key; logged. */
+  private async sendTerms(id: string, terms: Terms | null): Promise<void> {
+    await this.rootMessage(id, "amm/validator", { fn: "terms", args: terms }).then(() => this.say(`${id}: terms ${terms ? `${terms.lpFeeBps}/${terms.validatorFeeBps}/${terms.commissionBps}` : "null (market only)"} sent`), (e) => this.say(`${id}: terms not taken: ${(e as Error).message}`));
   }
 
   /** Root's message to `handle` in `box`, signed by the host's key, through the front door (the control socket's `message` path); throws on a refusal. */
@@ -314,6 +331,8 @@ export class Exchange {
       this.say(`reconcile: ${tokens.filter((t) => t.status === "enabled").length} enabled, ${tokens.filter((t) => t.status === "disabled").length} disabled on swap; discovery ${d.on ? "on" : "off"}`);
     });
   }
+
+  // A token-terms event is not replayed here: the token instance keeps its own amm/terms across restarts.
 
   /** swap's last token-enabled event per token id, from its log (the host recovers by reading the log, docs/VM.md "Events are open"). */
   private async enabledEvents(): Promise<Map<string, Rec>> {
