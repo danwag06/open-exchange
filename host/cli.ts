@@ -76,14 +76,15 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   // Events handed over before the reactions exist (a kernel's start) wait for them.
   let ex: Exchange | undefined;
   const early: Array<[string, Record<string, unknown>]> = [];
-  // 0.11.0: the pool reads (pools.ts) — GET /amm/pools and /@<tokenId>/amm/pools, the host's (skein's appRead).
+  // 0.11.0: the pool reads (pools.ts) — GET /amm/pools and /@<tokenId>/amm/pools, the host's (skein's appRead);
+  // 0.13.0: GET /amm/stats and /amm/positions too.
   let pools: Pools | undefined;
   const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) => await pools?.appRead(h, route, url, req);
   const host = await sk.cli.runHost(db, env, { router: { ...o.router, appRead, appEvent: (h: string, rec: Record<string, unknown>) => { if (ex) ex.event(h, rec); else early.push([h, rec]); } } });
   const log = (l: string) => env.out(`[open-exchange] ${l}`);
   pools = new Pools(host.router, log);
   const pl = pools;
-  ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log, tokensChanged: () => pl.tokensChanged(), ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
+  ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log, ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
   env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
   for (const [h, rec] of early.splice(0)) ex.event(h, rec);
   void ex.updateSwap();

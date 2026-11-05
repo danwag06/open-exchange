@@ -23,6 +23,11 @@
 //                          (/@<id>/amm/terms follows; null = market only); a token not on the list refused
 //   discovery off / on   → stopped / started
 //   restart the host     → reconcile creates nothing and starts what swap says
+//   history (0.13.0)     → a second token B from the token app's own fixtures (src/fixtures/vectors.zig: its deploy,
+//                          a pool, a sats-in and a token-in Swap, the validator's Rescind; the host's key is the
+//                          fixtures' validator identity, so B's pool is listed under a beating validator): the
+//                          pools stream's `change` events deploy, swap (with its trade row), swap, rescind;
+//                          /@<B>/amm/trades, /candles, /stats; the host's /amm/stats and /amm/positions; B's holders
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -145,10 +150,11 @@ function poolScript(t: PoolTemplate, o: { assetId: Uint8Array; reserve: number; 
   const prefix = new LockingScript().writeBin(Array.from(o.assetId)).writeNumber(o.reserve).writeOpCode(0x6d).toBinary();
   return LockingScript.fromBinary([...prefix, ...code, 0x6a, ...state]);
 }
-/** An event stream's events (`event: pools`, data JSON), as they come; `close` ends it. */
+/** An event stream's events: `got` the `pools` events' data, `changes` the `change` events' (0.13.0), as they come; `close` ends it. */
 function sseEvents(url: string) {
   const ac = new AbortController();
   const got: unknown[] = [];
+  const changes: Array<{ kind?: string; outpoint?: string; pool?: Record<string, unknown>; trade?: Record<string, unknown> }> = [];
   let status = 0;
   const done = (async () => {
     const res = await fetch(url, { headers: { accept: "text/event-stream" }, signal: ac.signal });
@@ -163,10 +169,11 @@ function sseEvents(url: string) {
         const ev = buf.slice(0, i); buf = buf.slice(i + 2);
         const data = /^data: (.*)$/m.exec(ev)?.[1];
         if (/^event: pools$/m.test(ev) && data !== undefined) got.push(JSON.parse(data));
+        if (/^event: change$/m.test(ev) && data !== undefined) changes.push(JSON.parse(data));
       }
     }
   })().catch(() => {});
-  return { got, status: () => status, close: () => { ac.abort(); return done; } };
+  return { got, changes, status: () => status, close: () => { ac.abort(); return done; } };
 }
 
 // ---------------------------------------------------------------- the headers feed (SSE, hex), as SKEIN_HEADERS_URL
@@ -237,7 +244,9 @@ else process.stdout.write("  (zero config skipped: OX_ACCEPT_ZERO=off)\n");
 
 // ---------------------------------------------------------------- the host
 const home = mkdtempSync(join(tmpdir(), "ox-accept-"));
-const shared = new PrivateKey("0e0e0e", 16);
+// 0.13.0: the token app's fixtures' validator identity (skein-amm gen/vectors: key(0x7f)), so the fixture pool
+// of the history checks is listed under this host's beating validator.
+const shared = new PrivateKey("7f".repeat(32), 16);
 const SHARED = shared.toPublicKey().toString();
 const admin = sk.hostenv.parseKey("0f".repeat(32), "admin");
 const ADMIN = admin.toPublicKey().toString();
@@ -441,29 +450,97 @@ try {
   check(b2.market?.minCommissionBps === 2 && typeof b2.market.commissionPkh === "string", `…the market: ${JSON.stringify(b2.market)}`);
   const vs = b2.validators ?? [];
   check(vs.some((v) => v.identity === SHARED && v.peerId === (liveT?.[0] as { from?: string } | undefined)?.from) && !vs.some((v) => v.identity === stranger.toPublicKey().toString()), `…validators: the beating one (the host key, its peer ID), not the stranger (${JSON.stringify(vs.map((v) => `${String(v.identity).slice(0, 8)}…/${String(v.peerId).slice(0, 12)}…`))})`);
-  const next2 = await until("a pools event with P0", () => s2.got.find((e) => (e as { pools?: Array<{ outpoint?: string }> }).pools?.some((p) => p.outpoint === p0)), 30_000);
-  check(!!next2 && s2.got.length >= 2, `…the stream sent the answer again once it changed (${s2.got.length} events; P0 in it ${Date.now() - tPools} ms after the pools' submission began)`);
+  const next2 = await until("a change event deploy P0", () => s2.changes.find((c) => c.kind === "deploy" && c.outpoint === p0), 30_000);
+  check(!!next2 && next2.pool?.outpoint === p0 && s2.got.length === 1, `…the stream sent one change, {kind: deploy, outpoint: P0, pool} (0.13.0, D7), not the whole answer again (${s2.changes.length} change events, ${s2.got.length} pools event; ${Date.now() - tPools} ms after the pools' submission began)`);
   await s2.close();
   const g1 = await fetch(`${R}/amm/pools`);
   const b1 = await g1.json().catch(() => undefined) as Array<Record<string, unknown>> | undefined;
   check(g1.status === 200 && b1?.length === 1 && b1[0]!.tokenId === A && b1[0]!.outpoint === p0 && g1.headers.get("cache-control") === "public, max-age=5", `GET /amm/pools (the bare host: swap): every enabled token's, each row with its tokenId (${JSON.stringify(b1?.map((p) => `${String(p.tokenId).slice(0, 8)}… ${String(p.outpoint).slice(0, 8)}…`))})`);
-  const s1 = sseEvents(`${R}/amm/pools`);
-  const first1 = await until("the first /amm/pools event", () => s1.got[0], 15_000) as unknown[] | undefined;
-  check(Array.isArray(first1) && first1.length === 1, `GET /amm/pools as an event stream: the first event (${first1?.length ?? "none"} pool)`);
+  const g1s = await fetch(`${R}/amm/pools`, { headers: { accept: "text/event-stream" } });
+  check(g1s.status === 200 && /application\/json/.test(g1s.headers.get("content-type") ?? "") && Array.isArray(await g1s.json().catch(() => undefined)), `GET /amm/pools asked for an event stream: the plain read (0.13.0, D7: the host-wide stream is gone; ${g1s.headers.get("content-type")})`);
+
+  // ------------------------------------------------ history (0.13.0, D1–D7): B from the token app's fixtures
+  const fixturesZig = await (async () => { const st = sk.stores.openStoreFile(sk.indexStore.storeSpec(x!.db.get(A)!), { readOnly: true }); try { return new TextDecoder().decode(await tree.readFile(st as never, appRec.tree, "src/fixtures/vectors.zig")); } finally { st.close(); } })();
+  const fx = (name: string) => Transaction.fromHex(new RegExp(`pub const ${name} = "([0-9a-f]+)"`).exec(fixturesZig)![1]!);
+  const fxLp = /pub const lp = "([0-9a-f]+)"/.exec(fixturesZig)![1]!;
+  const order = ["fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "rescind"];
+  const ftx = new Map(order.map((n) => [n, fx(n)]));
+  const byId = new Map([...ftx.values()].map((t) => [t.id("hex"), t]));
+  let topH = 0;
+  for (const n of order) {
+    const t = ftx.get(n)!;
+    let root = false;
+    for (const i of t.inputs) { const src = byId.get(i.sourceTXID!); if (src) i.sourceTransaction = src; else root = true; }
+    if (root) { topH = mineAlone(t); pushHeader(); }
+  }
+  check(!!(await until("A's chain at the fixtures' roots", async () => { const t = await kA.chainTip(); return t && t.height >= topH ? t : undefined; })), `the fixtures' roots (fund, token_deploy) mined, to ${topH}`);
+  const B = `${ftx.get("token_deploy")!.id("hex")}_0`;
+  const tmB = `tm_color_${B}`;
+  await send({ fn: "enable", args: { tokenId: B, beef: Uint8Array.from(ftx.get("token_deploy")!.toAtomicBEEF()) } });
+  check(!!(await until("/@B/amm/token", async () => (await get(`/@${B}/amm/token`)).status === 200 ? true : undefined, 60_000)), `B (the fixtures' token) enabled: /@<B>/amm/token 200`);
+  await x.exchange.idle();
+  keep(x, B);
+  const beatsB = await until("B's validator beating", async () => { const v = await getJson(`/@${B}/amm/pools`) as { validators?: Array<{ identity?: string }> } | undefined; return v?.validators?.some((y) => y.identity === SHARED) ? v : undefined; }, 60_000);
+  check(!!beatsB, "B's pools route names this host as a beating validator (the fixtures' identity)");
+  const sB = sseEvents(`${R}/@${B}/amm/pools`);
+  check(!!(await until("B's first pools event", () => sB.got[0], 15_000)), "B's pools stream: the first event pools");
+  const submitB = async (n: string) => {
+    const r = await fetch(`${R}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([tmB]) }, body: Uint8Array.from(ftx.get(n)!.toBEEF()) });
+    return { status: r.status, text: await r.text() };
+  };
+  const opOf = (n: string) => `${ftx.get(n)!.id("hex")}_0`;
+  const expectChange = async (n: string, kind: string, outpoint: string) => {
+    const sub = await submitB(n);
+    const c = await until(`B's change ${kind} ${outpoint.slice(0, 8)}`, () => sB.changes.find((y) => y.kind === kind && y.outpoint === outpoint), 30_000);
+    check(sub.status === 200 && !!c, `${n} submitted to ${tmB.slice(0, 18)}… (${sub.status} ${sub.text.slice(0, 80)}): change {kind: ${kind}, outpoint ${outpoint.slice(0, 8)}…} (${JSON.stringify(c)?.slice(0, 160)})`);
+    return c;
+  };
+  const cDeploy = await expectChange("pool_deploy", "deploy", opOf("pool_deploy"));
+  check(cDeploy?.pool?.outpoint === opOf("pool_deploy") && cDeploy.trade === undefined, "…deploy carries the pool row, no trade");
+  const cBuy = await expectChange("swap_bsv_in", "swap", opOf("swap_bsv_in"));
+  check(cBuy?.pool?.outpoint === opOf("swap_bsv_in") && cBuy.trade?.txid === ftx.get("swap_bsv_in")!.id("hex") && cBuy.trade?.side === "buy" && cBuy.trade?.amountIn === 20000 && cBuy.trade?.lpPubKey === fxLp, `…swap carries the continuation's row and its trade row (side ${String(cBuy?.trade?.side)}, amountIn ${String(cBuy?.trade?.amountIn)}, amountOut ${String(cBuy?.trade?.amountOut)})`);
+  const cSell = await expectChange("swap_tokens_in", "swap", opOf("swap_tokens_in"));
+  check(cSell?.trade?.side === "sell" && cSell.trade?.amountIn === 50000, `…the token-in swap: a sell (${JSON.stringify(cSell?.trade)?.slice(0, 120)})`);
+  check(!sB.changes.some((y) => y.kind === "close"), "…a swap's spent pool is no close (its LP key's continuation came in)");
+  const cRescind = await expectChange("rescind", "rescind", opOf("swap_tokens_in"));
+  check(!!cRescind && cRescind.pool === undefined, "…the validator's Rescind: change {kind: rescind} on the rescinded pool's outpoint (the lookup delists it; /positions says rescinded)");
+  check(sB.got.length === 1, `…B's stream sent the whole answer once only (${sB.got.length} pools events, ${sB.changes.length} changes)`);
+  await sB.close();
+
+  const tr = await fetch(`${R}/@${B}/amm/trades`);
+  const trj = await tr.json().catch(() => ({})) as { trades?: Array<Record<string, unknown>>; next?: unknown };
+  check(tr.status === 200 && tr.headers.get("cache-control") === "public, max-age=5" && trj.trades?.length === 2 && trj.trades[0]!.side === "sell" && trj.trades[1]!.side === "buy" && trj.next === null, `GET /@<B>/amm/trades: two rows, newest first (${trj.trades?.map((t) => t.side).join(", ")}), next null`);
+  check(!!trj.trades && trj.trades.every((t) => "height" in t && t.height === null && typeof t.at === "number" && typeof t.feeLp === "number"), "…each row with `at`, the fees, and `height` null (unmined)");
+  const one = await getJson(`/@${B}/amm/trades?txid=${ftx.get("swap_bsv_in")!.id("hex")}`) as Record<string, unknown> | undefined;
+  check(one?.side === "buy" && (await get(`/@${B}/amm/trades?txid=${ftx.get("pool_deploy")!.id("hex")}`)).status === 404, "…?txid= the one row; a deploy's txid 404");
+  check(((await getJson(`/@${B}/amm/trades?lp=${fxLp}&limit=1`)) as { trades?: unknown[]; next?: unknown })?.trades?.length === 1 && typeof ((await getJson(`/@${B}/amm/trades?lp=${fxLp}&limit=1`)) as { next?: unknown }).next === "string", "…?lp= the LP key's rows, a full page carries `next`");
+  const now = Date.now();
+  const cs = await getJson(`/@${B}/amm/candles?tf=1m&from=${now - 3_600_000}&to=${now + 60_000}`) as Array<{ t?: number; n?: number; o?: { sats?: number; tokens?: number } }> | undefined;
+  check(!!cs && cs.length >= 1 && cs.reduce((k, c) => k + (c.n ?? 0), 0) === 2 && typeof cs[0]!.o?.sats === "number", `GET /@<B>/amm/candles?tf=1m: ${cs?.length} non-empty bucket(s), 2 trades (${JSON.stringify(cs)?.slice(0, 160)})`);
+  check((await get(`/@${B}/amm/candles?tf=1m&from=0&to=${now}`)).status === 400, "…a window over 5000 buckets: 400");
+  const stB = await getJson(`/@${B}/amm/stats`) as Record<string, unknown> | undefined;
+  check(stB?.tokenId === B && stB.buys24h === 1 && stB.sells24h === 1 && typeof stB.lastTradeAt === "number" && (stB.price as { sats?: number } | null)?.sats !== undefined && stB.pools === 0 && stB.change24h === null, `GET /@<B>/amm/stats: ${JSON.stringify(stB)}`);
+  const stAll = await getJson("/amm/stats") as Array<{ tokenId?: string }> | undefined;
+  check(!!stAll && stAll.some((y) => y.tokenId === A) && stAll.some((y) => y.tokenId === B), `GET /amm/stats: every enabled token's (${stAll?.map((y) => String(y.tokenId).slice(0, 8)).join(", ")})`);
+  const stIds = await getJson(`/amm/stats?ids=${B}`) as Array<{ tokenId?: string }> | undefined;
+  check(stIds?.length === 1 && stIds[0]!.tokenId === B, "…?ids= those tokens only");
+  const posAll = await getJson(`/amm/positions?lp=${fxLp}`) as Array<{ tokenId?: string; status?: string; swaps?: number }> | undefined;
+  const posB = posAll?.find((y) => y.tokenId === B);
+  check(!!posAll && posAll.length === 2 && posB?.status === "rescinded" && posB.swaps === 2 && (await get("/amm/positions")).status === 400, `GET /amm/positions?lp=: every enabled token's rows with tokenId (B ${JSON.stringify(posB)}); no lp 400`);
+  const hB = await getJson(`/@${B}/amm/color/${B}/holders`) as { count?: number; rows?: Array<{ address?: string; balance?: number }> } | undefined;
+  check(!!hB && (hB.count ?? 0) >= 1 && hB.rows?.length === hB.count && hB.rows!.every((y, i) => i === 0 || (y.balance ?? 0) <= (hB.rows![i - 1]!.balance ?? 0)), `GET /@<B>/amm/color/<B>/holders: ${JSON.stringify(hB)?.slice(0, 200)}`);
 
   // ------------------------------------------------ disable, enable again
   await send({ fn: "disable", args: { tokenId: A } });
   const off = await until("A stopped", async () => (await get(`/@${A}/amm/token`)).status === 404 ? true : undefined);
   await x.exchange.idle();
   check(!!off && x.db.get(A)?.status === "disabled" && (await getJson(`/@${SWAP}/amm/tokens`))[0].status === "disabled", "disable: swap's row disabled; the instance stopped (404 at /@<A>)");
-  const after1 = await until("/amm/pools without A", () => s1.got.length >= 2 && Array.isArray(s1.got.at(-1)) && (s1.got.at(-1) as unknown[]).length === 0 ? true : undefined, 15_000);
-  check(!!after1, `…the /amm/pools stream after the disable: sent again, A's pools gone (${s1.got.length} events)`);
-  await s1.close();
+  check(!((await getJson("/amm/pools")) as Array<{ tokenId?: string }>).some((y) => y.tokenId === A), "…GET /amm/pools after the disable: A's pools gone");
   await x.exchange.rootMessage(SWAP, "amm/admin", { fn: "enable", args: { tokenId: A } });
   const on = await until("A started", async () => (await get(`/@${A}/amm/token`)).status === 200 ? true : undefined);
   await x.exchange.idle();
   check(!!on && x.db.get(A)?.status === "enabled", "enable again by root (the host's key; no BEEF: swap's kept deploy): started, /@<A>/amm/token 200");
-  check(!lines.some((l) => /created from image token/.test(l) && false) && lines.filter((l) => /token-enabled: created from image token/.test(l)).length === 1, "…created once");
+  check(!lines.some((l) => /created from image token/.test(l) && false) && lines.filter((l) => l.includes(`${A}: token-enabled: created from image token`)).length === 1, "…created once");
 
   // ------------------------------------------------ one token's terms (0.12.0): swap's event token-terms → the host's root message to A
   const termsOf = async () => (await getJson(`/@${A}/amm/terms`) as { validator?: { lpFeeBps?: number; validatorFeeBps?: number; commissionBps?: number } | null } | undefined)?.validator;
@@ -497,6 +574,7 @@ try {
   await send({ fn: "discovery", args: { on: true } });
   check(!!(await until("discovery started again", async () => (await get(`/@${DISCOVERY}/1color/listTopicManagers`)).status === 200 ? true : undefined)), "discovery {on:true} again: started");
   { const t = await get(`/@${DISCOVERY}/1color/tokens`); check(t.status === 200 && Array.isArray(JSON.parse(t.text)), `discovery: GET /@discovery/1color/tokens ${t.status} (P13)`); }
+  { const rowsD = await getJson(`/@${DISCOVERY}/1color/tokens?ids=${A}`) as Array<{ amount?: number; height?: number | null }> | undefined; check(rowsD?.[0]?.amount === 21_000_000 && rowsD[0].height === hA, `discovery's A row (0.13.0, D5): amount ${rowsD?.[0]?.amount}, height ${rowsD?.[0]?.height} (A's deploy mined at ${hA})`); }
   await x.exchange.idle();
 
   // ------------------------------------------------ restart: reconcile
