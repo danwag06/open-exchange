@@ -48,6 +48,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { DISCOVERY, SWAP } from "../../host/exchange.ts";
 import { load, OX_ROOT, skein, SWAP_APP_DIR, swapAppVersion } from "../../host/skein.ts";
 import { firstRun, main, settings, startExchange, type Env, type Running } from "../../host/cli.ts";
+import { mergeStats } from "../../host/pools.ts";
 
 type Sdk = typeof import("@bsv/sdk");
 // @bsv/sdk as skein's own dependency (resolved from the skein package).
@@ -458,6 +459,24 @@ try {
   check(g1.status === 200 && b1?.length === 1 && b1[0]!.tokenId === A && b1[0]!.outpoint === p0 && g1.headers.get("cache-control") === "public, max-age=5", `GET /amm/pools (the bare host: swap): every enabled token's, each row with its tokenId (${JSON.stringify(b1?.map((p) => `${String(p.tokenId).slice(0, 8)}… ${String(p.outpoint).slice(0, 8)}…`))})`);
   const g1s = await fetch(`${R}/amm/pools`, { headers: { accept: "text/event-stream" } });
   check(g1s.status === 200 && /application\/json/.test(g1s.headers.get("content-type") ?? "") && Array.isArray(await g1s.json().catch(() => undefined)), `GET /amm/pools asked for an event stream: the plain read (0.13.0, D7: the host-wide stream is gone; ${g1s.headers.get("content-type")})`);
+
+  // ------------------------------------------------ stats over the listed pools (0.13.1): P1 (validator not beating)
+  // and P2 (commission below the market's minimum) are in the instance's own /stats row, not in the host's answer.
+  const ownA = await (x!.pools as unknown as { instanceStats(h: string): Promise<Record<string, unknown>> }).instanceStats(A);
+  check(ownA.pools === 3 && ownA.tvlSats === 3 * 50_001 && ownA.lastTradeAt === null, `A's instance /stats, unfiltered: 3 pools, tvlSats ${String(ownA.tvlSats)} (${JSON.stringify(ownA)})`);
+  const stA0 = await getJson(`/@${A}/amm/stats`) as Record<string, unknown> | undefined;
+  const pA0 = stA0?.price as { sats?: number; tokens?: number } | null | undefined;
+  check(stA0?.pools === 1 && stA0.tvlSats === 50_001 && stA0.tvlTokens === 7_000_000 && pA0?.sats === 50_001 && pA0?.tokens === 7_000_000, `GET /@<A>/amm/stats (the host's): only P0 counted — pools 1, tvl 50001 sats / 7000000, no trade so price = P0's reserves (${JSON.stringify(stA0)})`);
+  // mergeStats alone (P0..P2 above have equal reserves, so the no-trade price cannot tell the lists apart there):
+  // the deepest LISTED pool prices a token with no trade; a trade's price passes through; no listed pool, no price.
+  const fp = (sats: number, tokens: number) => ({ outpoint: "x_0", bsvReserve: sats, tokenReserve: tokens, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 25, validatorIdentityKey: SHARED, validatorPeerId: "p" });
+  const own = { tokenId: A, price: { sats: 900, tokens: 1 }, lastTradeAt: null, tvlSats: 1900, tvlTokens: 12, pools: 3 };
+  const m1 = mergeStats(own, [fp(300, 5), fp(700, 6)]);
+  const m2 = mergeStats({ ...own, lastTradeAt: 5, price: { sats: 2, tokens: 3 } }, [fp(300, 5)]);
+  const m3 = mergeStats(own, []);
+  check(JSON.stringify(m1.price) === '{"sats":700,"tokens":6}' && m1.tvlSats === 1000 && m1.tvlTokens === 11 && m1.pools === 2 && JSON.stringify(m2.price) === '{"sats":2,"tokens":3}' && m2.pools === 1 && m3.price === null && m3.pools === 0 && m3.tvlSats === 0, `mergeStats: no trade → the deepest listed pool's price; a trade's price kept; none listed → null (${JSON.stringify([m1.price, m2.price, m3.price])})`);
+  const allA0 = (await getJson("/amm/stats") as Array<Record<string, unknown>> | undefined)?.find((y) => y.tokenId === A);
+  check(!!allA0 && allA0.pools === 1 && allA0.tvlSats === 50_001, `GET /amm/stats: A's row the same (pools ${String(allA0?.pools)}, tvlSats ${String(allA0?.tvlSats)})`);
 
   // ------------------------------------------------ history (0.13.0, D1–D7): B from the token app's fixtures
   const fixturesZig = await (async () => { const st = sk.stores.openStoreFile(sk.indexStore.storeSpec(x!.db.get(A)!), { readOnly: true }); try { return new TextDecoder().decode(await tree.readFile(st as never, appRec.tree, "src/fixtures/vectors.zig")); } finally { st.close(); } })();

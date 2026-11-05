@@ -113,7 +113,7 @@
       "get": {
         "operationId": "H4",
         "summary": "Every enabled token's stats",
-        "description": "Every enabled token instance's H3 `/stats` in one array (`ids`: those enabled tokens only, in the query's order). A token whose read fails is left out.",
+        "description": "Every enabled token's H3 `/stats` (as the host answers it) in one array (`ids`: those enabled tokens only, in the query's order). A token whose read fails is left out. `tvlSats`, `tvlTokens`, `pools` and the no-trade `price` are over the pools `/@<token>/amm/pools` lists.",
         "tags": [
           "history"
         ],
@@ -1270,7 +1270,7 @@
       "get": {
         "operationId": "H3",
         "summary": "A token's stats",
-        "description": "The token at the read's time, from its last 24 h of trade rows and its live pools.",
+        "description": "The token at the read's time, from its last 24 h of trade rows and its live pools. Answered by the Open Exchange host (0.13.1): `tvlSats`, `tvlTokens` and `pools` are over the pools `/@<token>/amm/pools` lists (validator beating, commission at or above the market minimum), and with no trade (`lastTradeAt` null) `price` is the deepest of those pools (most sats; its reserves), null with none; with a trade the price, changes and volumes are the instance's.",
         "tags": [
           "history"
         ],
@@ -1326,7 +1326,7 @@
         },
         "x-route": "H3",
         "x-cache": "state",
-        "x-answered-by": "amm-p2p (the pool lookup's trade rows and pools)"
+        "x-answered-by": "the Open Exchange host (amm-p2p's trade rows, the host's listed pools)"
       }
     },
     "/@{token}/amm/color/{tokenId}/holders": {

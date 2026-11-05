@@ -17,17 +17,17 @@ Nothing needs setting. The first start takes a few minutes: it syncs the block h
 
 The public read API is documented at `<origin>/api/` (the reference page) and `<origin>/api/openapi.json` (OpenAPI 3.1; sources in `api/`, copied into the pages by `scripts/www.sh`).
 
-The read API's routes, plain GETs (0.13.0: history and stats added; the host-wide event stream is gone):
+The read API's routes, plain GETs (0.13.0: history and stats added; the host-wide event stream is gone; 0.13.1: stats count only the pools a swap can use):
 
 | route | answer |
 |---|---|
 | `/amm/pools` | every enabled token's live pools, one array (a plain read) |
-| `/amm/stats` (`?ids=`) | every enabled token's `/stats`, one array (the landing page reads it once per load and every 30 s while visible) |
+| `/amm/stats` (`?ids=`) | every enabled token's `/stats` as the host answers it, one array (the landing page reads it once per load and every 30 s while visible) |
 | `/amm/positions?lp=` | every enabled token's positions for the LP keys, each with its `tokenId` |
 | `/@<token>/amm/pools` | the token's live pools, its market, the validators beating; with `Accept: text/event-stream` the whole answer once (`pools`), then one `change` per pool change (`deploy`, `swap` with its trade row, `close`, `rescind`) |
 | `/@<token>/amm/trades` (`?from&to&limit&before&lp`, or `?txid=`) | the token's trade rows, newest first |
 | `/@<token>/amm/candles?tf&from&to` | one candle per non-empty bucket |
-| `/@<token>/amm/stats` | price, 1 h / 24 h change, 24 h volume and counts, last trade, TVL, pools |
+| `/@<token>/amm/stats` | price, 1 h / 24 h change, 24 h volume and counts, last trade, TVL, pools; the host's (0.13.1): TVL, pools and, with no trade, the price are over the pools `/@<token>/amm/pools` lists (validator beating, commission at or above the market minimum), not every pool the instance indexes |
 | `/@<token>/amm/color/<token>/holders` (`?limit&skip`) | the holder count and the balances, largest first |
 | `/@<token>/amm/pools/beef`, `/positions`, `/fees/validator`, `/fees/commission`, `/terms`, `/spends`, `/tx`, `/swaps`, `/token` | as before (0.11.0) |
 | `/amm/tokens`, `/@discovery/1color/tokens` (rows with `amount` and `height`), `/<token>`, `/<token>/icon`, `/<token>/deploy` | as before |

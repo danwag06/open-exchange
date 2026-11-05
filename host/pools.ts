@@ -16,6 +16,12 @@
 //                                (0.13.0, D7: a plain read only — the host-wide event stream is gone.)
 //   GET <origin>/amm/stats      (0.13.0, D3) [<a token's GET /@<id>/amm/stats>]   every enabled token's,
 //                                one array; `?ids=a,b` those enabled tokens only, in the query's order.
+//   GET /@<tokenId>/amm/stats   (0.13.1) the instance's own `/stats` row with `tvlSats`, `tvlTokens` and `pools`
+//                                REPLACED by the sums and the count over the pools GET /@<id>/amm/pools lists (the
+//                                same filtered list: validator beating, commission at or above the market minimum);
+//                                with no trade (`lastTradeAt` null) `price` = the deepest of those pools (most sats,
+//                                {sats: bsvReserve, tokens: tokenReserve}, the instance's own rule), null with none;
+//                                with a trade, price/change/volume pass through. /amm/stats joins these rows.
 //   GET <origin>/amm/positions?lp=k1,k2   (0.13.0, D6) [{tokenId, …a row of GET /@<id>/amm/positions?lp=}]
 //                                every enabled token's rows for the keys (an unknown key: `closed`, zeros).
 //
@@ -74,6 +80,28 @@ const sse = (event: string, json: string) => `event: ${event}\ndata: ${json}\n\n
 const sameMeta = (x: TokenPools, y: TokenPools) => JSON.stringify(x.market) === JSON.stringify(y.market) &&
   JSON.stringify([...x.validators].sort((a, b) => a.identity.localeCompare(b.identity))) === JSON.stringify([...y.validators].sort((a, b) => a.identity.localeCompare(b.identity)));
 const num = (v: unknown) => typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
+
+const big = (v: unknown): bigint => { try { return typeof v === "bigint" ? v : BigInt(v as number | string); } catch { return 0n; } };
+
+/**
+ * A token's stats row as this host answers it (0.13.1): the instance's `/stats` row with `tvlSats`, `tvlTokens`
+ * and `pools` replaced by the sums and the count over `pools` (the list GET /@<id>/amm/pools serves: validator
+ * beating, commission at or above the market minimum); with no trade (`lastTradeAt` null) `price` = the deepest
+ * of `pools` (most sats, the first of equals, tokens > 0; `{sats, tokens}` its reserves — the instance's own
+ * fallback rule over the filtered list), null with none. With a trade the price, changes and volumes pass through.
+ */
+export function mergeStats(row: Rec, pools: PoolRow[]): Rec {
+  let sats = 0n, tokens = 0n;
+  let deepest: { sats: bigint; tokens: bigint } | null = null;
+  for (const p of pools) {
+    const s = big(p.bsvReserve), t = big(p.tokenReserve);
+    sats += s; tokens += t;
+    if (t > 0n && (deepest === null || s > deepest.sats)) deepest = { sats: s, tokens: t };
+  }
+  const out: Rec = { ...row, tvlSats: Number(sats), tvlTokens: Number(tokens), pools: pools.length };
+  if (row.lastTradeAt === null || row.lastTradeAt === undefined) out.price = deepest ? { sats: Number(deepest.sats), tokens: Number(deepest.tokens) } : null;
+  return out;
+}
 
 class ReadError extends Error {
   readonly status: number;
@@ -185,6 +213,11 @@ export class Pools {
       }
       return undefined;
     }
+    if (route === STATS_ROUTE && TOKEN_ID.test(handle)) {
+      try { return jsonAnswer(200, await this.tokenStats(handle, url, req), { "cache-control": CACHE }); } catch (e) {
+        return problem(e instanceof ReadError ? e.status : 503, (e as Error).message);
+      }
+    }
     if (route !== POOLS_ROUTE || !TOKEN_ID.test(handle)) return undefined;
     const stream = /text\/event-stream/.test(req.headers.accept ?? "");
     return stream ? this.tokenStream(handle) : await this.tokenAnswer(handle);
@@ -292,13 +325,30 @@ export class Pools {
     return out;
   }
 
-  /** The host-wide stats (0.13.0, D3): each enabled token's `/stats` (`ids`: those enabled tokens only, in its order). */
+  /** The instance's own `/stats` row (unfiltered: it knows no beats and no market minimum), read past `appRead`. */
+  private async instanceStats(handle: string, url?: URL, req?: RouterRequest): Promise<Rec> {
+    const r = this.router;
+    const u = url ?? new URL(`${r.origin()}/@${handle}${STATS_ROUTE}`);
+    const inner = r as unknown as { forward(h: string, route: string, url: URL, req: RouterRequest): Promise<RouterResponse> };
+    const a = await inner.forward(handle, STATS_ROUTE, u, req ?? { method: "GET", url: u.href, headers: {}, body: new Uint8Array() });
+    const text = new TextDecoder().decode(a.body);
+    if (a.status !== 200) throw new ReadError(502, `GET /@${handle}${STATS_ROUTE}: ${a.status} ${text.slice(0, 200)}`);
+    return JSON.parse(text) as Rec;
+  }
+
+  /** A token's stats (0.13.1): the instance's row merged with the pools this host lists for it (`mergeStats`). */
+  async tokenStats(id: string, url?: URL, req?: RouterRequest): Promise<Rec> {
+    const [row, answer] = await Promise.all([this.instanceStats(id, url, req), this.tokenPools(id)]);
+    return mergeStats(row, answer.pools);
+  }
+
+  /** The host-wide stats (0.13.0, D3; 0.13.1: each row `tokenStats`'s): each enabled token's (`ids`: those enabled tokens only, in its order). */
   async allStats(ids: string | null): Promise<unknown[]> {
     const enabled = this.tokens();
     const want = ids === null ? enabled : ids.split(",").map((x) => x.trim()).filter((x) => enabled.includes(x));
     const out: unknown[] = [];
     for (const id of want) {
-      try { out.push(await this.instanceRead(id, "GET", "stats")); } catch (e) { this.say(`${id}: stats: left out of /amm/stats: ${(e as Error).message}`); }
+      try { out.push(await this.tokenStats(id)); } catch (e) { this.say(`${id}: stats: left out of /amm/stats: ${(e as Error).message}`); }
     }
     return out;
   }
