@@ -47,6 +47,7 @@ passes anything, so the host's key may send these too.
 |---|---|---|---|
 | `enable {tokenId, beef?}` | row `enabled` under `amm/tokens`, the BEEF kept | `token-enabled {tokenId, beef, terms?, market?}` | see below |
 | `disable {tokenId}` | row `disabled` | `token-disabled {tokenId}` | stops the instance (disabled; off its libp2p node); never removes it |
+| `terms {tokenId, terms}` (0.12.0; `terms` the three fees or `null`) | nothing (the token instance's `amm/terms` is the record) | `token-terms {tokenId, terms}` | sends root's `terms` to the token's instance (`amm/validator`); not replayed at start |
 | `discovery {on}` | `{on, since}` under `amm/discovery` | `discovery-on` / `discovery-off` | starts / stops `discovery` |
 | `defaults {terms?, market?}` | `amm/defaults` | none | the next `token-enabled` events carry them |
 | `claim` (box `amm/claim`, any sender; the first only) | `{claimant, since}` under `amm/claim` (read: `GET <swap>/amm/admin`) | `claimed {claimant}` | grants `amm.admin` on swap to the claimant (root's `grant`) |
@@ -160,7 +161,7 @@ root is whoever claimed it): `run` logs a warning and leaves its pages as they a
 
 | image | installs |
 |---|---|
-| `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.34.1's web/ui; `/api/` the API docs); root's route `/` → the pages; created owned by the host's key |
+| `swap` | skein-chain v0.7.1 (tarball; 0.7.1: a reorg broadcasts nothing), `../../apps/swap` (pages: skein-amm v0.35.0's web/ui — 0.35.0: Settings edits each enabled token's own terms; `/api/` the API docs); root's route `/` → the pages; created owned by the host's key |
 | `token` | skein-chain v0.7.1, skein-amm v0.34.1 (tarballs, by tree hash; 0.34.1: the Positions page marks a validator live from `/amm/pools`' `validators`; 0.34.0: the public read API — `/amm/pools/beef`, `/amm/positions`, `/amm/fees/validator`, `/amm/fees/commission`, `/amm/terms`, `/amm/spends` lists, `/amm/tx`, `/amm/swaps`; lookup rows carry `lpPubKey`; 0.33.0: fee rows in `ls_amm_<assetId>`, one per swap admitted from 0.33.0 on (earlier swaps have none), and the list queries `{lpPubKeys}` (each pool's state and LP fees), `{validatorIdentityKeys}`, `{commissionPkhs}`; the Liquidity page loads positions with one query per token; 0.32.0: LP fees per position — `ls_amm_<assetId>` answers `{tokenId, lpPubKey}` with the LP fees a pool lineage earned, sats and tokens apart, and `{tokenId, outpoint}` carries them; the Liquidity page shows them; 0.31.4: the Swap page reads the wallet's sats from the toolbox's balance special operation, not the admin-only `default` basket; 0.31.3: skein-overlay 0.20.2 — `rebeat` re-declares the configured lookups' liveness too; 0.31.2: skein-overlay 0.20.1 — `rebeat` re-declares each topic's liveness window too, so an instance registered before 0.20.0 drops its 40 s window; 0.31.1: a swap leg refused `pool_spent` is repriced against the pool's newest state and sent once more; 0.31.0: the relay's dialled frame names the token's topic, so a validator whose host runs several instances on one libp2p node gets the stream; 0.29.5: the validator's submission carries the pool's transaction back to proven ones, so the door admits a relayed swap; 0.24.1: skein-overlay 0.20.0 and skein-1color 0.13.1, the settled sync design — announce, then fetch; no wants; every proof published); root's `/submit`, `/lookup` |
 | `discovery` | skein-chain v0.7.1, skein-1color v0.14.0 (tarballs; 0.14.0: the read routes `/1color/tokens` (paged or `?ids=`), `/1color/<token>`, `/1color/<token>/icon`, `/1color/<token>/deploy`; 0.13.4: its pages submit and look up at the host root, `<origin>/submit` and `<origin>/lookup`; engine skein-overlay 0.20.2: `rebeat` re-declares the configured `ls_color`'s liveness too); root's `/submit`, `/lookup` |
 
@@ -169,7 +170,7 @@ root is whoever claimed it): `run` logs a warning and leaves its pages as they a
 ```
 zig build test                      # the swap program's tests
 zig build bin                       # apps/swap/bin/config.wasm (committed)
-scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.34.1's web/ui + the 1Color pages (skein-1color v0.14.0's www/) + api/
+scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.35.0's web/ui + the 1Color pages (skein-1color v0.14.0's www/) + api/
 npm install --no-save <dcasegr-skein-0.2.8.tgz>   # skein from its `npm pack` until it is published
 npm run typecheck                   # host/ and scripts/ against node_modules/@dcasegr/skein
 npm run build                       # dist/ (what the package runs; `npm pack` builds it)
@@ -194,7 +195,7 @@ these steps:
 3. run
 4. enable: the instance is born, its deploy admitted, its names served, its beats seen, and
    bare-host `/lookup` is routed to it
-5. disable, then enable again
+5. disable, then enable again; one token's terms (40/6/3, then null, an unknown token refused)
 6. discovery off, then on
 7. a restart, with reconcile
 8. swap's pages: a restart with a packaged swap app of another version installs it (as root)
