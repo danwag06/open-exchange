@@ -4,7 +4,7 @@
 //! - **The enable list**, the root of the head `amm/tokens`:
 //!
 //!     {kind: "amm-tokens", tokens: [<row>, …]}
-//!     row {tokenId, topic, sym, dec, icon?, status, since, deploy}
+//!     row {tokenId, topic, sym, dec, status, since, deploy}
 //!
 //!   `status` `enabled` or `disabled`: root's last decision, a fact (shruggr/skein#164: nothing
 //!   answers back; the host materializes it). `since` the decision's time (ms). `deploy` the
@@ -16,7 +16,8 @@
 //! - **A deploy** (`deployOf`): the enable's BEEF names the token id's transaction as its subject,
 //!   and that transaction's output `<vout>` is a deploy (skein-1color's rules: a BRC-162 binary
 //!   deploy at output 0, a BRC-161 inscription at any): its display fields, as the 1Color token
-//!   list gives them (sym, dec, icon).
+//!   list gives them (sym, dec); its icon is not kept (0.11.0): the `/tokens` read names the
+//!   discovery instance's icon route instead, `iconUrl` = `/@discovery/1color/<tokenId>/icon`.
 const std = @import("std");
 const w = @import("chain");
 const deploy = @import("deploy");
@@ -46,7 +47,6 @@ pub const Deploy = deploy.Deploy;
 pub const DeployCheck = deploy.DeployCheck;
 pub const canonicalId = deploy.canonicalId;
 pub const deployOf = deploy.deployOf;
-pub const dataUrlOf = deploy.dataUrlOf;
 
 fn map(a: Allocator, es: []const cbor.Entry) !Value {
     return .{ .map = try a.dupe(cbor.Entry, es) };
@@ -94,7 +94,6 @@ pub fn enabledRow(a: Allocator, d: Deploy, at: u64, deploy_value: Value) !Value 
         .{ .key = "sym", .value = .{ .text = d.sym } },
         .{ .key = "dec", .value = .{ .uint = d.dec } },
     });
-    if (d.icon) |ic| try es.append(a, .{ .key = "icon", .value = .{ .text = ic } });
     try es.appendSlice(a, &.{
         .{ .key = "status", .value = .{ .text = @tagName(Status.enabled) } },
         .{ .key = "since", .value = .{ .uint = at } },
@@ -121,7 +120,14 @@ pub fn statusOf(row: Value) ?Status {
     return std.meta.stringToEnum(Status, row.getText("status") orelse return null);
 }
 
-/// The `/tokens` answer's JSON: the rows newest first (by `since`, then token id), each without its `deploy`.
+/// The discovery instance's icon route for a token, origin-relative (skein-1color 0.14.0, P15).
+pub fn iconUrlOf(a: Allocator, token_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "/@discovery/1color/{s}/icon", .{token_id});
+}
+
+/// The `/tokens` answer's JSON: the rows newest first (by `since`, then token id), each without its
+/// `deploy`, with `iconUrl` (the discovery icon route; a row stored before 0.11.0 drops its data-URL
+/// `icon`).
 pub fn tokensJson(a: Allocator, rows: []const Value) ![]const u8 {
     const sorted = try a.dupe(Value, rows);
     std.mem.sort(Value, sorted, {}, struct {
@@ -139,8 +145,13 @@ pub fn tokensJson(a: Allocator, rows: []const Value) ![]const u8 {
         try jw.beginObject();
         for (r.map) |e| {
             if (eql(u8, e.key, "deploy")) continue; // the BEEF is the host's (the event), not the read's
+            if (eql(u8, e.key, "icon")) continue; // a pre-0.11.0 row's data URL
             try jw.objectField(e.key);
             try writeJson(&jw, e.value);
+        }
+        if (r.getText("tokenId")) |id| {
+            try jw.objectField("iconUrl");
+            try jw.write(try iconUrlOf(a, id));
         }
         try jw.endObject();
     }

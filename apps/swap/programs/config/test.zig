@@ -119,6 +119,15 @@ test "the enable list: enabled (the BEEF kept as deploy, never read out) or disa
     try testing.expect(std.mem.indexOf(u8, json, "deploy") == null);
     try testing.expect(std.mem.indexOf(u8, json, "url") == null);
     try testing.expect(std.mem.indexOf(u8, json, "\"since\":300") != null);
+    // iconUrl = the discovery icon route; no data URL, stored (none since 0.11.0) or read.
+    try testing.expect(std.mem.indexOf(u8, json, "\"iconUrl\":\"/@discovery/1color/aa_0/icon\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"iconUrl\":\"/@discovery/1color/bb_0/icon\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "data:") == null);
+    try testing.expect(tokens.find(tokens.rowsOf(rec), "bb_0").?.get("icon") == null);
+    // A row stored before 0.11.0 with a data-URL icon reads without it.
+    const old = try tokens.updated(a, off, .disabled, &.{.{ .key = "icon", .value = .{ .text = "data:image/png;base64,AA==" } }}, &.{});
+    const oldJson = try tokens.tokensJson(a, &.{old});
+    try testing.expect(std.mem.indexOf(u8, oldJson, "data:") == null and std.mem.indexOf(u8, oldJson, "\"iconUrl\"") != null);
     try testing.expect((try tokens.shown(a, off)).get("deploy") == null);
     try testing.expect(std.meta.stringToEnum(tokens.Status, "creating") == null and std.meta.stringToEnum(tokens.Status, "failed") == null);
 }
@@ -163,7 +172,7 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    try testing.expectEqualStrings("0.10.0", scbor.Value.str(m.get("version")).?);
+    try testing.expectEqualStrings("0.11.0", scbor.Value.str(m.get("version")).?);
     // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
     // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
     // anything); claim is listed in no role.

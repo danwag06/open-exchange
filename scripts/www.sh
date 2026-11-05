@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # apps/swap/www/, the swap app's pages, as committed: the AMM pages built from
 # skein-amm's page library (web/ui) at the tag below, then the 1Color pages
-# (skein-1color's www/, by tarball URL and sha256) copied into apps/swap/www/color/.
+# (skein-1color's www/, by tarball URL and sha256) copied into apps/swap/www/color/, then the API
+# docs (api/openapi.json, api/index.html: the sources, kept outside www/ because the vite build
+# empties it) copied into apps/swap/www/api/.
 #   AMM_DIR=<a skein-amm checkout at the tag> scripts/www.sh     (default ../skein-amm)
 # Needs Node 22+ and npm, and the Rúnar checkout skein-amm's web/ui/README.md names.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 OX="$(pwd)"
-AMM_TAG=v0.33.0
+AMM_TAG=v0.34.1
 AMM_DIR="${AMM_DIR:-$OX/../skein-amm}"
 want="$(git -C "$AMM_DIR" rev-parse "${AMM_TAG}^{commit}")"
 have="$(git -C "$AMM_DIR" rev-parse HEAD)"
@@ -15,9 +17,9 @@ have="$(git -C "$AMM_DIR" rev-parse HEAD)"
 (cd "$AMM_DIR/web/engine" && npm ci)
 (cd "$AMM_DIR/web/ui" && npm ci && npx tsc -b && npx vite build --outDir "$OX/apps/swap/www" --emptyOutDir)
 
-TAG=v0.13.4
+TAG=v0.14.0
 URL="https://github.com/shruggr/skein-1color/archive/refs/tags/${TAG}.tar.gz"
-SHA256=aeb93a79b0eaba7066d31054ea522b1335276d69ce0370a5708d58ddb78d26c7
+SHA256=711cf14ce74851dd6cfd96d6be106caa4efe7c8a285e816134cda60497e7b8b1
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 curl -sSfL -o "$tmp/c.tar.gz" "$URL"
@@ -26,4 +28,7 @@ tar -xzf "$tmp/c.tar.gz" -C "$tmp" "skein-1color-${TAG#v}/www"
 rm -rf apps/swap/www/color
 mkdir -p apps/swap/www/color
 cp -R "$tmp/skein-1color-${TAG#v}/www/." apps/swap/www/color/
-echo "apps/swap/www/ <- skein-amm ${AMM_TAG} web/ui + skein-1color ${TAG} www/"
+rm -rf apps/swap/www/api
+mkdir -p apps/swap/www/api
+cp api/openapi.json api/index.html apps/swap/www/api/
+echo "apps/swap/www/ <- skein-amm ${AMM_TAG} web/ui + skein-1color ${TAG} www/ + api/"

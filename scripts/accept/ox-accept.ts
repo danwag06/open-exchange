@@ -349,6 +349,7 @@ try {
   await send({ fn: "enable", args: { tokenId: A, beef: Uint8Array.from(dA.toAtomicBEEF()) } });
   const rowA = await until("A enabled on swap", async () => (await getJson(`/@${SWAP}/amm/tokens`) as Array<Record<string, unknown>>)?.find((t) => t.tokenId === A && t.status === "enabled"));
   check(!!rowA && !("url" in rowA) && !("deploy" in rowA) && rowA.sym === "AAA", `swap: A enabled, a fact (${JSON.stringify(rowA)})`);
+  check(!!rowA && rowA.iconUrl === `/@discovery/1color/${A}/icon` && !("icon" in rowA), `…its iconUrl the discovery icon route, no data-URL icon (P12; ${String(rowA?.iconUrl)})`);
   const up = await until("/@A/amm/token", async () => { const t = await get(`/@${A}/amm/token`); return t.status === 200 ? t : undefined; }, 60_000);
   check(!!up && JSON.parse(up.text).tokenId === A, `the host reacted: /@<A>/amm/token 200 ${Date.now() - t1} ms after the enable`);
   await x.exchange.idle();
@@ -430,12 +431,14 @@ try {
   check(!!listed, `ls_amm_<A> {tokenId} lists P0, P1 and P2 (${listed?.length ?? 0})`);
   const p0 = `${pools[0]!.id("hex")}_0`;
   const g2 = await fetch(p2);
-  const b2 = await g2.json().catch(() => ({})) as { market?: { minCommissionBps?: unknown; commissionPkh?: unknown }; pools?: Array<Record<string, unknown>> };
+  const b2 = await g2.json().catch(() => ({})) as { market?: { minCommissionBps?: unknown; commissionPkh?: unknown }; validators?: Array<{ identity?: string; peerId?: string }>; pools?: Array<Record<string, unknown>> };
   check(g2.status === 200 && g2.headers.get("cache-control") === "public, max-age=5", `GET /@<A>/amm/pools: 200, cache-control ${g2.headers.get("cache-control")}`);
   check(b2.pools?.length === 1 && b2.pools[0]!.outpoint === p0, `…only P0: P1 (validator not beating) and P2 (commission 1 < the market's 2) absent (${JSON.stringify(b2.pools?.map((p) => p.outpoint))})`);
   const row0 = b2.pools?.[0];
   check(!!row0 && row0.validatorIdentityKey === SHARED && row0.validatorPeerId === (liveT?.[0] as { from?: string } | undefined)?.from && row0.lpPubKey === lps[0] && row0.commissionBps === 25, `…P0's row: validator ${String(row0?.validatorIdentityKey).slice(0, 8)}…, peer ${String(row0?.validatorPeerId).slice(0, 12)}…, lpPubKey ${row0?.lpPubKey === lps[0] ? "its LP key" : String(row0?.lpPubKey)} (${JSON.stringify(row0)})`);
   check(b2.market?.minCommissionBps === 2 && typeof b2.market.commissionPkh === "string", `…the market: ${JSON.stringify(b2.market)}`);
+  const vs = b2.validators ?? [];
+  check(vs.some((v) => v.identity === SHARED && v.peerId === (liveT?.[0] as { from?: string } | undefined)?.from) && !vs.some((v) => v.identity === stranger.toPublicKey().toString()), `…validators: the beating one (the host key, its peer ID), not the stranger (${JSON.stringify(vs.map((v) => `${String(v.identity).slice(0, 8)}…/${String(v.peerId).slice(0, 12)}…`))})`);
   const next2 = await until("a pools event with P0", () => s2.got.find((e) => (e as { pools?: Array<{ outpoint?: string }> }).pools?.some((p) => p.outpoint === p0)), 30_000);
   check(!!next2 && s2.got.length >= 2, `…the stream sent the answer again once it changed (${s2.got.length} events; P0 in it ${Date.now() - tPools} ms after the pools' submission began)`);
   await s2.close();
@@ -473,6 +476,7 @@ try {
   check(!!dOff && JSON.parse((await get(`/@${SWAP}/amm/discovery`)).text).on === false, "discovery {on:false}: stopped (404)");
   await send({ fn: "discovery", args: { on: true } });
   check(!!(await until("discovery started again", async () => (await get(`/@${DISCOVERY}/1color/listTopicManagers`)).status === 200 ? true : undefined)), "discovery {on:true} again: started");
+  { const t = await get(`/@${DISCOVERY}/1color/tokens`); check(t.status === 200 && Array.isArray(JSON.parse(t.text)), `discovery: GET /@discovery/1color/tokens ${t.status} (P13)`); }
   await x.exchange.idle();
 
   // ------------------------------------------------ restart: reconcile
@@ -515,6 +519,12 @@ try {
   const ver = async () => { const l = await x!.host.router.hydrate(SWAP); const c = await l.kernel.call("head", "amm/app"); return c ? (await l.kernel.store.get(c as never) as { version?: string }).version : undefined; };
   check(lines.some((l) => l.includes(`swap: pages updated to ${bumped} (from ${swapAppVersion()}`)) && await ver() === bumped, `restart with a packaged swap app ${bumped}: installed into swap as root (amm/app ${await ver()})`);
   check((await get("/accept.txt")).text === "the bumped package\n", "…its pages served (GET /accept.txt at the bare host)");
+  {
+    const o = await get("/api/openapi.json");
+    const doc = o.status === 200 ? JSON.parse(o.text) as { openapi?: string; paths?: Record<string, unknown> } : undefined;
+    const page = await get("/api/");
+    check(doc?.openapi === "3.1.0" && !!doc.paths?.["/@{token}/amm/pools"] && page.status === 200 && page.text.includes("openapi.json"), `the API docs: GET /api/openapi.json ${o.status} (OpenAPI ${doc?.openapi}, ${Object.keys(doc?.paths ?? {}).length} paths), GET /api/ ${page.status} (P18)`);
+  }
   check((await getJson(`/@${SWAP}/amm/tokens`) as Array<{ tokenId: string }>).some((t) => t.tokenId === A) && (await getJson(`/@${SWAP}/amm/admin`) as { claimant?: string }).claimant === ADMIN && (await rootOf(x, SWAP, "amm.admin")).join() === ADMIN, "…swap's state kept: A on the list, the claimant, its amm.admin grant");
   await send({ fn: "defaults", args: { market: { minCommissionBps: 3 } } });
   check(!!(await until("the admin's defaults after the upgrade", async () => (await getJson(`/@${SWAP}/amm/defaults`) as { market?: { minCommissionBps?: number } })?.market?.minCommissionBps === 3 ? true : undefined)), "…the admin's message in amm/admin runs after the upgrade (defaults market 3)");

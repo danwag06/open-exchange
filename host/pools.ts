@@ -2,13 +2,16 @@
 // the HOST through skein's Router option `appRead` (skein 0.2.6) — the two routes that join what only
 // the host holds (the beats it keeps per topic) to a token instance's pool index:
 //
-//   GET /@<tokenId>/amm/pools   {market, pools: [{lpPubKey, outpoint, bsvReserve, tokenReserve,
-//                                liquidityFeeBps, validationFeeBps, commissionBps, validatorIdentityKey,
-//                                validatorPeerId}]}
+//   GET /@<tokenId>/amm/pools   {market, validators: [{identity, peerId}], pools: [{lpPubKey, outpoint,
+//                                bsvReserve, tokenReserve, liquidityFeeBps, validationFeeBps, commissionBps,
+//                                validatorIdentityKey, validatorPeerId}]}
 //       the instance's pools (its lookup ls_amm_<tokenId>, query {tokenId}) whose validator is beating
 //       on tm_color_<tokenId>-live now (the host's liveness table; the peer ID is the beat's `from`) AND
 //       whose commissionBps is at least the instance's market minimum; `market` = the instance's own
-//       answer at GET /amm/terms (`market`: {commissionPkh, minCommissionBps}). Nothing else computed.
+//       answer at GET /amm/terms (`market`: {commissionPkh, minCommissionBps}); `validators` = every
+//       validator beating on tm_color_<tokenId>-live now (identity hex, peer ID the beat's `from`), whatever
+//       its pools (0.11.0, David: the Positions page shows a validator live when its pool is below the
+//       market minimum). Nothing else computed.
 //   GET <origin>/amm/pools      [{tokenId, …the row above}]   every enabled token instance's, one array.
 //
 // Both `Cache-Control: public, max-age=5`. Asked with `Accept: text/event-stream`: an event stream, the
@@ -43,7 +46,8 @@ export interface PoolRow {
   validatorIdentityKey: string; validatorPeerId: string;
 }
 export interface Market { commissionPkh?: unknown; minCommissionBps?: unknown }
-export interface TokenPools { market: Market; pools: PoolRow[] }
+export interface Validator { identity: string; peerId: string }
+export interface TokenPools { market: Market; validators: Validator[]; pools: PoolRow[] }
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const jsonAnswer = (status: number, v: unknown, headers: Record<string, string> = {}): RouterResponse =>
@@ -181,7 +185,8 @@ export class Pools {
         validatorIdentityKey: v, validatorPeerId: peer,
       });
     }
-    return { market, pools };
+    const validators: Validator[] = [...live].map(([identity, peerId]) => ({ identity, peerId }));
+    return { market, validators, pools };
   }
 
   private async tokenAnswer(id: string): Promise<RouterResponse> {

@@ -1,0 +1,2078 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Open Exchange public read API",
+    "version": "0.11.0",
+    "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/\u2026`. Each operation carries `x-cache` (its class) and `x-answered-by`."
+  },
+  "servers": [
+    {
+      "url": "{origin}",
+      "variables": {
+        "origin": {
+          "default": "https://testnet.openex.dev",
+          "description": "The exchange's origin."
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "name": "pools"
+    },
+    {
+      "name": "fees"
+    },
+    {
+      "name": "chain"
+    },
+    {
+      "name": "swaps"
+    },
+    {
+      "name": "tokens"
+    },
+    {
+      "name": "host"
+    },
+    {
+      "name": "docs"
+    }
+  ],
+  "paths": {
+    "/amm/pools": {
+      "get": {
+        "operationId": "P1",
+        "summary": "Every enabled token's live pools",
+        "description": "Every enabled token instance's P2 pools in one array, each row with its `tokenId`. A token whose read fails is left out. With `Accept: text/event-stream` the answer is an event stream (`Cache-Control: no-cache`): the current answer as the first event `pools`, then the answer again each time it changed (sent only when its JSON differs). Each event: `event: pools`, `data: <the JSON answer>`. The stream also sends when a token is enabled or disabled.",
+        "tags": [
+          "pools"
+        ],
+        "parameters": [
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "description": "`text/event-stream` for the stream form.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "allOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "tokenId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tokenId"
+                        ]
+                      },
+                      {
+                        "$ref": "#/components/schemas/LivePool"
+                      }
+                    ]
+                  }
+                },
+                "example": [
+                  {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                    "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                    "bsvReserve": 1000001,
+                    "tokenReserve": 99999950849,
+                    "liquidityFeeBps": 30,
+                    "validationFeeBps": 5,
+                    "commissionBps": 25,
+                    "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                    "validatorPeerId": "16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo"
+                  }
+                ]
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "event: pools\ndata: [{\"tokenId\":\"959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0\",\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"outpoint\":\"277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"bsvReserve\":1000001,\"tokenReserve\":99999950849,\"liquidityFeeBps\":30,\"validationFeeBps\":5,\"commissionBps\":25,\"validatorIdentityKey\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"validatorPeerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}]\n\n"
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          }
+        },
+        "x-route": "P1",
+        "x-cache": "state + stream",
+        "x-answered-by": "the Open Exchange host"
+      }
+    },
+    "/@{token}/amm/pools": {
+      "get": {
+        "operationId": "P2",
+        "summary": "A token's live pools and its market",
+        "description": "`pools`: the token instance's listed pools whose validator is beating on `tm_color_<token>-live` now (its peer ID from the beat) and whose `commissionBps` is at least the market's `minCommissionBps`; `market` is the instance's P7 market; `validators` is every validator beating on `tm_color_<token>-live` now (identity and peer ID). With `Accept: text/event-stream` the answer is an event stream (`Cache-Control: no-cache`): the current answer as the first event `pools`, then the answer again each time it changed (sent only when its JSON differs). Each event: `event: pools`, `data: <the JSON answer>`.",
+        "tags": [
+          "pools"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "required": false,
+            "description": "`text/event-stream` for the stream form.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPools"
+                },
+                "example": {
+                  "market": {
+                    "commissionPkh": "5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112",
+                    "minCommissionBps": 1
+                  },
+                  "validators": [
+                    {
+                      "identity": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                      "peerId": "16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo"
+                    }
+                  ],
+                  "pools": [
+                    {
+                      "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                      "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                      "bsvReserve": 1000001,
+                      "tokenReserve": 99999950849,
+                      "liquidityFeeBps": 30,
+                      "validationFeeBps": 5,
+                      "commissionBps": 25,
+                      "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                      "validatorPeerId": "16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo"
+                    }
+                  ]
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "event: pools\ndata: {\"market\":{\"commissionPkh\":\"5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112\",\"minCommissionBps\":1},\"validators\":[{\"identity\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"peerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}],\"pools\":[{\"lpPubKey\":\"03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff\",\"outpoint\":\"277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0\",\"bsvReserve\":1000001,\"tokenReserve\":99999950849,\"liquidityFeeBps\":30,\"validationFeeBps\":5,\"commissionBps\":25,\"validatorIdentityKey\":\"030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc\",\"validatorPeerId\":\"16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo\"}]}\n\n"
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "502": {
+            "description": "The instance's pool lookup or `/amm/terms` read failed (e.g. no such token instance).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The read failed otherwise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P2",
+        "x-cache": "state + stream",
+        "x-answered-by": "the Open Exchange host"
+      }
+    },
+    "/@{token}/amm/pools/beef": {
+      "get": {
+        "operationId": "P3",
+        "summary": "Current pools with one BEEF",
+        "description": "The LP keys' current pools (live, or a rescinded pool's output, which the LP's Close takes back) in query order (a key with neither: nothing), or with no `lp` every live pool; `beef` is the base64 of one BEEF of their transactions.",
+        "tags": [
+          "pools"
+        ],
+        "parameters": [
+          {
+            "name": "lp",
+            "in": "query",
+            "required": false,
+            "description": "LP public keys, comma-separated (33 bytes hex each). Absent: every live pool.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pools": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PoolState"
+                      }
+                    },
+                    "beef": {
+                      "type": "string",
+                      "contentEncoding": "base64"
+                    }
+                  },
+                  "required": [
+                    "pools",
+                    "beef"
+                  ]
+                },
+                "example": {
+                  "pools": [
+                    {
+                      "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                      "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                      "bsvReserve": 1000001,
+                      "tokenReserve": 99999950849,
+                      "liquidityFeeBps": 30,
+                      "validationFeeBps": 5,
+                      "commissionBps": 25,
+                      "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc"
+                    }
+                  ],
+                  "beef": "AQC+7wH+..."
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "A key that is not hex of its length.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No token yet: this instance has had no deploy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P3",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p (skein-amm 0.34.0)"
+      }
+    },
+    "/@{token}/amm/positions": {
+      "get": {
+        "operationId": "P4",
+        "summary": "LP positions by key",
+        "description": "One record per LP key in query order: the pool's status, its current pool (live or rescinded), and the LP fees its swaps paid. An unknown key answers `closed` with zeros.",
+        "tags": [
+          "fees"
+        ],
+        "parameters": [
+          {
+            "name": "lp",
+            "in": "query",
+            "required": true,
+            "description": "LP public keys, comma-separated.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Position"
+                  }
+                },
+                "example": [
+                  {
+                    "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                    "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                    "current": {
+                      "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+                      "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                      "bsvReserve": 1000001,
+                      "tokenReserve": 99999950849,
+                      "liquidityFeeBps": 30,
+                      "validationFeeBps": 5,
+                      "commissionBps": 25,
+                      "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc"
+                    },
+                    "status": "live",
+                    "sats": 1200,
+                    "tokens": 300000,
+                    "swaps": 4
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "`lp` missing, or a key that is not hex of its length.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No token yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P4",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p via the pool lookup's `{lpPubKeys}`"
+      }
+    },
+    "/@{token}/amm/fees/validator": {
+      "get": {
+        "operationId": "P5",
+        "summary": "Validator fees by identity key",
+        "description": "One record per validator identity key in query order: the validator fees over all its pools of this token (closed included); `pools` the distinct pools counted.",
+        "tags": [
+          "fees"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "description": "Validator identity keys, comma-separated.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ValidatorFees"
+                  }
+                },
+                "example": [
+                  {
+                    "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                    "sats": 210,
+                    "tokens": 50000,
+                    "swaps": 9,
+                    "pools": 2
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "`id` missing, or a key that is not hex of its length.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No token yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P5",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p via `{validatorIdentityKeys}`"
+      }
+    },
+    "/@{token}/amm/fees/commission": {
+      "get": {
+        "operationId": "P6",
+        "summary": "Commissions by pkh",
+        "description": "One record per commission pkh in query order: the commissions the swaps naming it paid.",
+        "tags": [
+          "fees"
+        ],
+        "parameters": [
+          {
+            "name": "pkh",
+            "in": "query",
+            "required": true,
+            "description": "Commission public key hashes, comma-separated (20 bytes hex each).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CommissionFees"
+                  }
+                },
+                "example": [
+                  {
+                    "commissionPkh": "5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112",
+                    "sats": 75,
+                    "tokens": 0,
+                    "swaps": 3
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "`pkh` missing, or a hash that is not hex of its length.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No token yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P6",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p via `{commissionPkhs}`"
+      }
+    },
+    "/@{token}/amm/terms": {
+      "get": {
+        "operationId": "P7",
+        "summary": "Validator and market terms",
+        "description": "The instance's validator terms (null: a market only) and its market, unsigned: `amm.pool.terms` and `amm.swap.terms` in one.",
+        "tags": [
+          "pools"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terms"
+                },
+                "example": {
+                  "validator": {
+                    "identity": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                    "peerId": "16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo",
+                    "lpFeeBps": 35,
+                    "validatorFeeBps": 10,
+                    "commissionBps": 5
+                  },
+                  "market": {
+                    "commissionPkh": "5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112",
+                    "minCommissionBps": 1
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          }
+        },
+        "x-route": "P7",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p"
+      }
+    },
+    "/@{token}/amm/spends": {
+      "get": {
+        "operationId": "P8",
+        "summary": "Outpoint spends",
+        "description": "What the chain state says of each outpoint: its spender and, for a pool output, the pool's current output. One outpoint answers the single object; several (a comma in the value) answer one record per outpoint in query order.",
+        "tags": [
+          "chain"
+        ],
+        "parameters": [
+          {
+            "name": "outpoint",
+            "in": "query",
+            "required": true,
+            "description": "`<txid>.<vout>` (or `_`), comma-separated.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc.0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Spend"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Spend"
+                      }
+                    }
+                  ]
+                },
+                "example": [
+                  {
+                    "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc.0",
+                    "spentBy": "e419cdd700000000000000000000000000000000000000000000000000000000",
+                    "current": "e419cdd700000000000000000000000000000000000000000000000000000000.0",
+                    "hops": 1,
+                    "closed": false
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "`outpoint` missing or malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P8",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p"
+      }
+    },
+    "/@{token}/amm/tx": {
+      "get": {
+        "operationId": "P9",
+        "summary": "A transaction's BEEF",
+        "description": "The transaction's Atomic BEEF from the chain state (its ancestry back to proven transactions), as bytes.",
+        "tags": [
+          "chain"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "description": "The txid, 64 hex characters.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The BEEF bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`public, max-age=31536000, immutable` when the transaction is proven (mined, its BUMP in the chain state), else `public, max-age=5`."
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`id` missing or not 64 hex characters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P9",
+        "x-cache": "imm (proven) / state",
+        "x-answered-by": "amm-p2p"
+      }
+    },
+    "/@{token}/amm/swaps": {
+      "get": {
+        "operationId": "P10",
+        "summary": "A relayed swap's record",
+        "description": "The relay record as `amm.swap.status` answers it, unsigned (the signed `/call amm.swap.status` stays). The swap id is the sha256 of the swap, 64 hex characters.",
+        "tags": [
+          "swaps"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "description": "The swap id.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwapRecord"
+                },
+                "example": {
+                  "id": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+                  "status": "accepted",
+                  "funding": {
+                    "/": {
+                      "bytes": "..."
+                    }
+                  },
+                  "swap": {
+                    "/": {
+                      "bytes": "..."
+                    }
+                  },
+                  "pool": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+                  "validator": {
+                    "/": {
+                      "bytes": "..."
+                    }
+                  },
+                  "expires": 1793750415000,
+                  "created": 1793750400000,
+                  "updated": 1793750401200,
+                  "txid": "d033883000000000000000000000000000000000000000000000000000000000"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "bad_id: 64 hex characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P10",
+        "x-cache": "state",
+        "x-answered-by": "amm-p2p"
+      }
+    },
+    "/@{token}/amm/token": {
+      "get": {
+        "operationId": "P11",
+        "summary": "The token instance's token",
+        "description": "The head `amm/token`: the token this instance serves.",
+        "tags": [
+          "tokens"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenRecord"
+                },
+                "example": {
+                  "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "topic": "tm_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "lookup": "ls_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "ammLookup": "ls_amm_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "sym": "AMM2",
+                  "dec": 5,
+                  "txid": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+                  "vout": 0
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No token: this instance has taken no deploy event.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P11",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "amm-setup"
+      }
+    },
+    "/amm/tokens": {
+      "get": {
+        "operationId": "P12",
+        "summary": "The exchange's token list",
+        "description": "The swap instance's enable list, every status, newest first.",
+        "tags": [
+          "tokens"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnabledToken"
+                  }
+                },
+                "example": [
+                  {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "topic": "tm_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "sym": "AMM2",
+                    "dec": 5,
+                    "status": "enabled",
+                    "since": 1793750400000,
+                    "iconUrl": "/@discovery/1color/959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0/icon"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "x-route": "P12",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "the swap app (open-exchange 0.11.0)"
+      }
+    },
+    "/@discovery/1color/tokens": {
+      "get": {
+        "operationId": "P13",
+        "summary": "Discovery's token list",
+        "description": "Every token whose deploy the discovery topic `tm_color` admitted, newest first, paged; or with `ids`, one row per id in query order (`{tokenId, listed: false}` for an id not listed). `ids` beside `limit`/`skip`, a malformed id or an empty `ids`: 400.",
+        "tags": [
+          "tokens"
+        ],
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "description": "Token ids `<txid>_<vout>`, comma-separated.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 100
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/ListedToken"
+                      },
+                      {
+                        "$ref": "#/components/schemas/UnlistedToken"
+                      }
+                    ]
+                  }
+                },
+                "example": [
+                  {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "topic": "tm_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "sym": "AMM2",
+                    "dec": 5,
+                    "iconUrl": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0/icon",
+                    "txid": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+                    "vout": 0
+                  },
+                  {
+                    "tokenId": "b4dc735a00000000000000000000000000000000000000000000000000000000_0",
+                    "listed": false
+                  }
+                ]
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "400": {
+            "description": "A bad query.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P13",
+        "x-cache": "state",
+        "x-answered-by": "color-lookup (skein-1color 0.14.0)"
+      }
+    },
+    "/@discovery/1color/{token}": {
+      "get": {
+        "operationId": "P14",
+        "summary": "A listed token",
+        "description": "The token's deploy fields as discovery lists it.",
+        "tags": [
+          "tokens"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListedToken"
+                },
+                "example": {
+                  "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "topic": "tm_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                  "sym": "AMM2",
+                  "dec": 5,
+                  "iconUrl": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0/icon",
+                  "txid": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+                  "vout": 0
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "public, max-age=5"
+              }
+            }
+          },
+          "404": {
+            "description": "Not a token id, or not listed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P14",
+        "x-cache": "state",
+        "x-answered-by": "color-lookup"
+      }
+    },
+    "/@discovery/1color/{token}/icon": {
+      "get": {
+        "operationId": "P15",
+        "summary": "A token's icon",
+        "description": "The deploy's embedded icon bytes with its media type. A BRC-161 JSON deploy (icon a string) has no icon here: 404 (its list/detail `iconUrl` is that string when it is an http(s) URL).",
+        "tags": [
+          "tokens"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The icon bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`public, max-age=31536000, immutable` when the deploy is proven, else `public, max-age=5`."
+              }
+            },
+            "content": {
+              "image/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such token, or no embedded icon.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P15",
+        "x-cache": "imm (proven) / state",
+        "x-answered-by": "color-lookup"
+      }
+    },
+    "/@discovery/1color/{token}/deploy": {
+      "get": {
+        "operationId": "P16",
+        "summary": "A token's deploy BEEF",
+        "description": "The deploy transaction's Atomic BEEF from the chain state.",
+        "tags": [
+          "tokens"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token id, `<txid>_<vout>` (BRC-162), lowercase hex.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_[0-9]+$"
+            },
+            "example": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The BEEF bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`public, max-age=31536000, immutable` when the deploy is proven, else `public, max-age=5`."
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P16",
+        "x-cache": "imm (proven) / state",
+        "x-answered-by": "color-lookup"
+      }
+    },
+    "/.well-known/skein": {
+      "get": {
+        "operationId": "P17a",
+        "summary": "The instance card",
+        "description": "At an instance's origin (`/@<handle>/.well-known/skein`, or the root instance at the bare origin): `{handle, identity, origin, claimed}`.",
+        "tags": [
+          "host"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "handle": {
+                      "type": "string"
+                    },
+                    "identity": {
+                      "type": "string"
+                    },
+                    "origin": {
+                      "type": "string"
+                    },
+                    "claimed": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "example": {
+                  "handle": "swap",
+                  "identity": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                  "origin": "https://testnet.openex.dev",
+                  "claimed": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P17a",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "skein host"
+      }
+    },
+    "/skeins": {
+      "get": {
+        "operationId": "P17b",
+        "summary": "Instances a key holds root on",
+        "description": "The instances on this host whose grants name `key` among root's holders.",
+        "tags": [
+          "host"
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "query",
+            "required": true,
+            "description": "An identity key, 33 bytes hex.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "handle": {
+                        "type": "string"
+                      },
+                      "identity": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "example": [
+                  {
+                    "handle": "swap",
+                    "identity": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+                    "url": "https://testnet.openex.dev"
+                  }
+                ]
+              }
+            }
+          },
+          "400": {
+            "description": "Not an identity key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P17b",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "skein host"
+      }
+    },
+    "/amm/admin": {
+      "get": {
+        "operationId": "P17c",
+        "summary": "The exchange's claimant",
+        "description": "`{claimant, since}`, or `{}` while unclaimed.",
+        "tags": [
+          "host"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "claimant": {
+                      "type": "string"
+                    },
+                    "since": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "claimant": "034579b80000000000000000000000000000000000000000000000000000000000",
+                  "since": 1793750400000
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P17c",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "the swap app"
+      }
+    },
+    "/amm/defaults": {
+      "get": {
+        "operationId": "P17d",
+        "summary": "Defaults for new token instances",
+        "description": "`{terms?, market?}` (`{}` when none is set).",
+        "tags": [
+          "host"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "terms": {
+                      "type": "object",
+                      "properties": {
+                        "lpFeeBps": {
+                          "type": "integer"
+                        },
+                        "validatorFeeBps": {
+                          "type": "integer"
+                        },
+                        "commissionBps": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "market": {
+                      "type": "object",
+                      "properties": {
+                        "minCommissionBps": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "terms": {
+                    "lpFeeBps": 35,
+                    "validatorFeeBps": 10,
+                    "commissionBps": 5
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P17d",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "the swap app"
+      }
+    },
+    "/amm/discovery": {
+      "get": {
+        "operationId": "P17e",
+        "summary": "Discovery on or off",
+        "description": "`{on, since}`, or `{on: false}` with no record.",
+        "tags": [
+          "host"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "on": {
+                      "type": "boolean"
+                    },
+                    "since": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "on": true,
+                  "since": 1793750400000
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P17e",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "the swap app"
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "operationId": "P18a",
+        "summary": "This document",
+        "description": "The OpenAPI 3.1 document of the public read API.",
+        "tags": [
+          "docs"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "This document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P18a",
+        "x-cache": "as the swap pages are served",
+        "x-answered-by": "files in the swap app's www/"
+      }
+    },
+    "/api/": {
+      "get": {
+        "operationId": "P18b",
+        "summary": "The reference page",
+        "description": "An HTML page rendered from `openapi.json`.",
+        "tags": [
+          "docs"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "HTML.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "P18b",
+        "x-cache": "as the swap pages are served",
+        "x-answered-by": "files in the swap app's www/"
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "description": "A refusal from an amm-p2p read (P3\u2013P10): `{error}`, no Cache-Control.",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "description": "A refusal from the host or a 1Color/swap read: `{status: \"error\", code?, description? | message?}`.",
+        "properties": {
+          "status": {
+            "const": "error"
+          },
+          "code": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "PoolState": {
+        "type": "object",
+        "description": "A listed pool as the pool lookup (`ls_amm_<token>`, query `{tokenId}`) renders it. Reserves in the smallest unit (satoshis; the token's base unit).",
+        "properties": {
+          "lpPubKey": {
+            "type": "string",
+            "description": "The LP's public key (33 bytes hex) = the pool id."
+          },
+          "outpoint": {
+            "type": "string",
+            "description": "`<txid>_<vout>` of the current pool output."
+          },
+          "bsvReserve": {
+            "type": "integer"
+          },
+          "tokenReserve": {
+            "type": "integer"
+          },
+          "liquidityFeeBps": {
+            "type": "integer"
+          },
+          "validationFeeBps": {
+            "type": "integer"
+          },
+          "commissionBps": {
+            "type": "integer"
+          },
+          "validatorIdentityKey": {
+            "type": "string",
+            "description": "The validator's identity key (33 bytes hex)."
+          }
+        },
+        "required": [
+          "lpPubKey",
+          "outpoint",
+          "bsvReserve",
+          "tokenReserve",
+          "liquidityFeeBps",
+          "validationFeeBps",
+          "commissionBps",
+          "validatorIdentityKey"
+        ],
+        "example": {
+          "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+          "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+          "bsvReserve": 1000001,
+          "tokenReserve": 99999950849,
+          "liquidityFeeBps": 30,
+          "validationFeeBps": 5,
+          "commissionBps": 25,
+          "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc"
+        }
+      },
+      "LivePool": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PoolState"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "validatorPeerId": {
+                "type": "string",
+                "description": "The validator's libp2p peer ID, from its beat on `tm_color_<token>-live`."
+              }
+            },
+            "required": [
+              "validatorPeerId"
+            ]
+          }
+        ],
+        "example": {
+          "lpPubKey": "03a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900aabbccddeeff",
+          "outpoint": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
+          "bsvReserve": 1000001,
+          "tokenReserve": 99999950849,
+          "liquidityFeeBps": 30,
+          "validationFeeBps": 5,
+          "commissionBps": 25,
+          "validatorIdentityKey": "030683a6f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbcc",
+          "validatorPeerId": "16Uiu2HAmVaxF2exampleexampleexampleexampleexampleg1bo"
+        }
+      },
+      "Market": {
+        "type": "object",
+        "description": "The instance's market: the commission pkh this relay is paid at, and its minimum commission (0 when unset).",
+        "properties": {
+          "commissionPkh": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "hash160, 20 bytes hex."
+          },
+          "minCommissionBps": {
+            "type": "integer"
+          }
+        },
+        "example": {
+          "commissionPkh": "5f2c9d0a1b3e4f5061728394a5b6c7d8e9f00112",
+          "minCommissionBps": 1
+        }
+      },
+      "Validator": {
+        "type": "object",
+        "description": "A validator beating on `tm_color_<token>-live` now.",
+        "properties": {
+          "identity": {
+            "type": "string",
+            "description": "Identity key, 33 bytes hex."
+          },
+          "peerId": {
+            "type": "string",
+            "description": "libp2p peer ID, from the beat."
+          }
+        },
+        "required": [
+          "identity",
+          "peerId"
+        ]
+      },
+      "TokenPools": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "$ref": "#/components/schemas/Market"
+          },
+          "validators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Validator"
+            },
+            "description": "Every validator beating on the token's topic now, whatever its pools (a pool below the market minimum is not listed, its validator still is)."
+          },
+          "pools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LivePool"
+            }
+          }
+        },
+        "required": [
+          "market",
+          "validators",
+          "pools"
+        ]
+      },
+      "Position": {
+        "type": "object",
+        "properties": {
+          "lpPubKey": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "live",
+              "rescinded",
+              "closed"
+            ]
+          },
+          "outpoint": {
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/PoolState"
+          },
+          "sats": {
+            "type": "integer",
+            "description": "LP fees earned in satoshis."
+          },
+          "tokens": {
+            "type": "integer",
+            "description": "LP fees earned in the token's base unit."
+          },
+          "swaps": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lpPubKey",
+          "status",
+          "sats",
+          "tokens",
+          "swaps"
+        ]
+      },
+      "ValidatorFees": {
+        "type": "object",
+        "properties": {
+          "validatorIdentityKey": {
+            "type": "string"
+          },
+          "sats": {
+            "type": "integer"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "swaps": {
+            "type": "integer"
+          },
+          "pools": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "validatorIdentityKey",
+          "sats",
+          "tokens",
+          "swaps",
+          "pools"
+        ]
+      },
+      "CommissionFees": {
+        "type": "object",
+        "properties": {
+          "commissionPkh": {
+            "type": "string"
+          },
+          "sats": {
+            "type": "integer"
+          },
+          "tokens": {
+            "type": "integer"
+          },
+          "swaps": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "commissionPkh",
+          "sats",
+          "tokens",
+          "swaps"
+        ]
+      },
+      "Terms": {
+        "type": "object",
+        "properties": {
+          "validator": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "identity": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "peerId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lpFeeBps": {
+                    "type": "integer"
+                  },
+                  "validatorFeeBps": {
+                    "type": "integer"
+                  },
+                  "commissionBps": {
+                    "type": "integer"
+                  }
+                }
+              }
+            ],
+            "description": "null: no terms set, this instance is a market only."
+          },
+          "market": {
+            "$ref": "#/components/schemas/Market"
+          }
+        },
+        "required": [
+          "validator",
+          "market"
+        ]
+      },
+      "Spend": {
+        "type": "object",
+        "properties": {
+          "outpoint": {
+            "type": "string",
+            "description": "`<txid>.<vout>`"
+          },
+          "spentBy": {
+            "type": "string",
+            "description": "The spending txid."
+          },
+          "current": {
+            "type": "string",
+            "description": "For a pool output: the pool's current output `<txid>.<vout>`, followed spender to spender."
+          },
+          "hops": {
+            "type": "integer"
+          },
+          "closed": {
+            "type": "boolean",
+            "description": "A pool spent by a transaction that did not continue it (Close)."
+          }
+        },
+        "required": [
+          "outpoint",
+          "hops",
+          "closed"
+        ]
+      },
+      "SwapRecord": {
+        "type": "object",
+        "description": "The relay record as `amm.swap.status` answers it, as dag-json (bytes are `{\"/\": {\"bytes\": <base64>}}`).",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "accepted",
+              "refused",
+              "timeout",
+              "failed"
+            ]
+          },
+          "funding": {
+            "type": "object"
+          },
+          "swap": {
+            "type": "object"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "validator": {
+            "type": "object"
+          },
+          "expires": {
+            "type": "integer"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          },
+          "tx": {
+            "type": "object"
+          },
+          "txid": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "poolState": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "pool",
+          "validator",
+          "expires",
+          "created",
+          "updated"
+        ]
+      },
+      "TokenRecord": {
+        "type": "object",
+        "description": "The token instance's head `amm/token`.",
+        "properties": {
+          "tokenId": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "lookup": {
+            "type": "string"
+          },
+          "ammLookup": {
+            "type": "string"
+          },
+          "sym": {
+            "type": "string"
+          },
+          "dec": {
+            "type": "integer"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "txid": {
+            "type": "string"
+          },
+          "vout": {
+            "type": "integer"
+          }
+        }
+      },
+      "EnabledToken": {
+        "type": "object",
+        "properties": {
+          "tokenId": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "sym": {
+            "type": "string"
+          },
+          "dec": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "enabled",
+              "disabled"
+            ]
+          },
+          "since": {
+            "type": "integer",
+            "description": "ms"
+          },
+          "iconUrl": {
+            "type": "string",
+            "description": "Origin-relative: `/@discovery/1color/<tokenId>/icon` (404 there when discovery is off or the deploy has no embedded icon)."
+          }
+        },
+        "required": [
+          "tokenId",
+          "topic",
+          "sym",
+          "dec",
+          "status",
+          "since",
+          "iconUrl"
+        ]
+      },
+      "ListedToken": {
+        "type": "object",
+        "properties": {
+          "tokenId": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "sym": {
+            "type": "string"
+          },
+          "dec": {
+            "type": "integer"
+          },
+          "iconUrl": {
+            "type": "string",
+            "description": "Relative to the list (`<tokenId>/icon`) for an embedded icon; a BRC-161 deploy's http(s) icon URL as is; absent when none."
+          },
+          "txid": {
+            "type": "string"
+          },
+          "vout": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tokenId",
+          "topic",
+          "sym",
+          "dec",
+          "txid",
+          "vout"
+        ]
+      },
+      "UnlistedToken": {
+        "type": "object",
+        "properties": {
+          "tokenId": {
+            "type": "string"
+          },
+          "listed": {
+            "const": false
+          }
+        },
+        "required": [
+          "tokenId",
+          "listed"
+        ]
+      }
+    }
+  }
+}
