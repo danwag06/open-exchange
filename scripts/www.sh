@@ -5,11 +5,11 @@
 # docs (api/openapi.json, api/index.html: the sources, kept outside www/ because the vite build
 # empties it) copied into apps/swap/www/api/.
 #   AMM_DIR=<a skein-amm checkout at the tag> scripts/www.sh     (default ../skein-amm)
-# Needs Node 22+ and npm, and the Rúnar checkout skein-amm's web/ui/README.md names.
+# Needs Node 22+ and npm (skein-amm vendors runar-sdk since 0.38.0: no Rúnar checkout).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 OX="$(pwd)"
-AMM_TAG=v0.35.1
+AMM_TAG=v0.39.0
 AMM_DIR="${AMM_DIR:-$OX/../skein-amm}"
 want="$(git -C "$AMM_DIR" rev-parse "${AMM_TAG}^{commit}")"
 have="$(git -C "$AMM_DIR" rev-parse HEAD)"
