@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "amm",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "programs": {
     "config": "bin/config.wasm"
   },

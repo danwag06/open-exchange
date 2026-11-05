@@ -93,7 +93,7 @@ Reads on swap (anyone):
 ## Requirements
 
 - **Node 24 or later**, on any platform node runs on. Nothing else: no toolchain.
-- **skein 0.2.5**, the npm dependency (`package.json`). Its host is built to JavaScript, and its
+- **skein 0.2.8**, the npm dependency (`package.json`; 0.2.8: the host keeps its liveness beats in host.db and reloads them at start, so `/amm/pools` lists pools again right after a restart). Its host is built to JavaScript, and its
   kernel is one wasm file the host loads: one machine per active instance on a worker thread,
   every instance a set of the host's one SQLite database (`SKEIN_STORE_SQLITE`, the default
   the first run writes). A host.env naming `SKEIN_STORE_ROCKSDB` runs skein's native kernel process
@@ -170,7 +170,7 @@ root is whoever claimed it): `run` logs a warning and leaves its pages as they a
 zig build test                      # the swap program's tests
 zig build bin                       # apps/swap/bin/config.wasm (committed)
 scripts/www.sh                      # apps/swap/www (committed): skein-amm v0.34.1's web/ui + the 1Color pages (skein-1color v0.14.0's www/) + api/
-npm install --no-save <dcasegr-skein-0.2.7.tgz>   # skein from its `npm pack` until it is published
+npm install --no-save <dcasegr-skein-0.2.8.tgz>   # skein from its `npm pack` until it is published
 npm run typecheck                   # host/ and scripts/ against node_modules/@dcasegr/skein
 npm run build                       # dist/ (what the package runs; `npm pack` builds it)
 [SKEIN_REPLAY_DIR=<skein checkout>] [SKEIN_EQUIV_STORE=rocksdb|file] [OX_ACCEPT_ZERO=off] npm run accept
