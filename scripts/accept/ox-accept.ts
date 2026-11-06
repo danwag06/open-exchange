@@ -28,7 +28,7 @@
 //                          payment on the row; again → 409 before payment; the coin in swap's wallet (GET /amm/wallet);
 //                          a BEEF not the token's deploy → 400; disabled by the admin → 409 (only the admin re-enables);
 //                          the price replayed onto the route after a restart and after the swap app's reinstall
-//   discovery off / on   → stopped / started
+//   discovery off / on   → stopped / started; (0.15.1) the list's q (symbol / token id prefix) and after (paging)
 //   restart the host     → reconcile creates nothing and starts what swap says
 //   history (0.13.0; 0.14.0) → a second token B from the token app's own fixtures (src/fixtures/vectors.zig: its deploy,
 //                          a pool, a sats-in and a token-in Swap, the LP's Close; the host's key is the fixtures'
@@ -824,6 +824,30 @@ try {
   check(!!(await until("discovery started again", async () => (await get(`/@${DISCOVERY}/1color/listTopicManagers`)).status === 200 ? true : undefined)), "discovery {on:true} again: started");
   { const t = await get(`/@${DISCOVERY}/1color/tokens`); check(t.status === 200 && Array.isArray(JSON.parse(t.text)), `discovery: GET /@discovery/1color/tokens ${t.status} (P13)`); }
   { const rowsD = await getJson(`/@${DISCOVERY}/1color/tokens?ids=${A}`) as Array<{ amount?: number; height?: number | null }> | undefined; check(rowsD?.[0]?.amount === 21_000_000 && rowsD[0].height === hA, `discovery's A row (0.13.0, D5): amount ${rowsD?.[0]?.amount}, height ${rowsD?.[0]?.height} (A's deploy mined at ${hA})`); }
+  // 0.15.1 (skein-1color 0.16.0): the list's search (q: symbol or token id STARTS WITH) and cursor (after=<tokenId>).
+  {
+    const subP = await fetch(`${R}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify(["tm_color"]) }, body: Uint8Array.from(dP.toBEEF()) });
+    check(subP.status === 200, `P's deploy submitted to tm_color (${subP.status})`);
+    type Row = { tokenId: string; sym: string };
+    const full = await until("discovery lists A and P", async () => { const l = await getJson(`/@${DISCOVERY}/1color/tokens`) as Row[] | undefined; return l && l.length >= 2 && l.some((r) => r.tokenId === P) ? l : undefined; }) ?? [];
+    const ids = (l: Row[] | undefined) => (l ?? []).map((r) => r.tokenId).join(",");
+    const want = (q: string) => full.filter((r) => r.sym.toLowerCase().startsWith(q.toLowerCase()) || r.tokenId.startsWith(q)).map((r) => r.tokenId).join(",");
+    for (const q of ["aA", "AAA", "ppp", "p"]) {
+      const got = await getJson(`/@${DISCOVERY}/1color/tokens?q=${encodeURIComponent(q)}`) as Row[] | undefined;
+      check(ids(got) === want(q) && ids(got).includes(/^a/i.test(q) ? A : P), `discovery ?q=${q} (by symbol prefix): ${ids(got).split(",").map((t) => t.slice(0, 8)).join(" ")}`);
+    }
+    const byId = await getJson(`/@${DISCOVERY}/1color/tokens?q=${A.slice(0, 7)}`) as Row[] | undefined;
+    check(ids(byId) === want(A.slice(0, 7)) && ids(byId).includes(A), `discovery ?q=${A.slice(0, 7)} (by token id prefix): ${ids(byId).split(",").map((t) => t.slice(0, 8)).join(" ")}`);
+    const p1 = await getJson(`/@${DISCOVERY}/1color/tokens?limit=1`) as Row[] | undefined;
+    const p2 = await getJson(`/@${DISCOVERY}/1color/tokens?limit=1&after=${p1?.[0]?.tokenId}`) as Row[] | undefined;
+    const pEnd = await getJson(`/@${DISCOVERY}/1color/tokens?after=${full.at(-1)?.tokenId}`) as Row[] | undefined;
+    check(ids(p1) === full[0]?.tokenId && ids(p2) === full[1]?.tokenId && pEnd?.length === 0, `discovery paging with after: ${ids(p1).slice(0, 8)} → ${ids(p2).slice(0, 8)} → [] (the list ${ids(full).split(",").map((t) => t.slice(0, 8)).join(" ")})`);
+    const qa = await getJson(`/@${DISCOVERY}/1color/tokens?q=aaa&after=${full[0]?.tokenId}`) as Row[] | undefined;
+    check(ids(qa) === full.slice(1).filter((r) => want("aaa").split(",").includes(r.tokenId)).map((r) => r.tokenId).join(","), `discovery ?q=aaa&after=<first>: ${ids(qa) || "[]"}`);
+    const unknown = await get(`/@${DISCOVERY}/1color/tokens?after=${"ee".repeat(32)}_0`);
+    const withSkip = await get(`/@${DISCOVERY}/1color/tokens?after=${A}&skip=1`);
+    check(unknown.status === 400 && withSkip.status === 400, `discovery: an unknown after ${unknown.status}, after beside skip ${withSkip.status}`);
+  }
   await x.exchange.idle();
 
   // ------------------------------------------------ restart: reconcile

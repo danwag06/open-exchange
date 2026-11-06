@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Open Exchange public read API",
-    "version": "0.15.0",
+    "version": "0.15.1",
     "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/…`. Each operation carries `x-cache` (its class) and `x-answered-by`."
   },
   "servers": [
@@ -1937,7 +1937,7 @@
       "get": {
         "operationId": "P13",
         "summary": "Discovery's token list",
-        "description": "Every token whose deploy the discovery topic `tm_color` admitted, newest first, paged; or with `ids`, one row per id in query order (`{tokenId, listed: false}` for an id not listed). `ids` beside `limit`/`skip`, a malformed id or an empty `ids`: 400.",
+        "description": "Every token whose deploy the discovery topic `tm_color` admitted, newest first, paged; or with `ids`, one row per id in query order (`{tokenId, listed: false}` for an id not listed). `ids` beside `limit`/`skip`, a malformed id or an empty `ids`: 400. Search and cursor (0.15.1, skein-1color 0.16.0): `q` keeps the tokens whose `sym` STARTS WITH it (ASCII case-insensitive) or whose `tokenId` starts with it, the same rows in the same order (indexed, never a scan); `after=<tokenId>` (the last row's id) lists the rows strictly after that token, with or without `q`. An `after` not on the list, `after` beside `skip`, or `q`/`after` beside `ids`: 400. A token whose deploy was admitted before 0.15.1 is found by its id, not its symbol, until its deploy is admitted again (no backfill).",
         "tags": [
           "tokens"
         ],
@@ -1949,6 +1949,27 @@
             "description": "Token ids `<txid>_<vout>`, comma-separated.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "Search: the tokens whose symbol starts with it (ASCII case-insensitive) or whose token id starts with it (lower-case hex). Empty: no filter. At most 100 bytes.",
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "example": "amm"
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Cursor: a token id `<txid>_<vout>` (the previous page's last row); the rows strictly after it in the list's order. Not beside `skip`.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}_(0|[1-9][0-9]*)$"
             }
           },
           {
