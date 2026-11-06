@@ -17,19 +17,25 @@ Nothing needs setting. The first start takes a few minutes: it syncs the block h
 
 The public read API is documented at `<origin>/api/` (the reference page) and `<origin>/api/openapi.json` (OpenAPI 3.1; sources in `api/`, copied into the pages by `scripts/www.sh`).
 
-The read API's routes, plain GETs (0.13.0: history and stats added; the host-wide event stream is gone; 0.13.1: stats count only the pools a swap can use):
+The read API's routes, plain GETs, and the pool event feeds (0.14.0: every pool read by the pool id — the deploy outpoint `<txid>_<vout>`, a clean break, no `?lp=`; one price; the validator's minimum leg; the pools route no longer streams):
 
 | route | answer |
 |---|---|
 | `/amm/pools` | every enabled token's live pools, one array (a plain read) |
 | `/amm/stats` (`?ids=`) | every enabled token's `/stats` as the host answers it, one array (the landing page reads it once per load and every 30 s while visible) |
-| `/amm/positions?lp=` | every enabled token's positions for the LP keys, each with its `tokenId` |
-| `/@<token>/amm/pools` | the token's live pools, its market, the validators beating; with `Accept: text/event-stream` the whole answer once (`pools`), then one `change` per pool change (`deploy`, `swap` with its trade row, `close`, `rescind`) |
-| `/@<token>/amm/trades` (`?from&to&limit&before&lp`, or `?txid=`) | the token's trade rows, newest first |
-| `/@<token>/amm/candles?tf&from&to` | one candle per non-empty bucket |
-| `/@<token>/amm/stats` | price, 1 h / 24 h change, 24 h volume and counts, last trade, TVL, pools; the host's (0.13.1): TVL, pools and, with no trade, the price are over the pools `/@<token>/amm/pools` lists (validator beating, commission at or above the market minimum), not every pool the instance indexes |
+| `/amm/positions?pool=` | every enabled token's positions for the pool ids, each with its `tokenId` |
+| `/amm/spends?outpoint=a,b` | one record per outpoint, `{outpoint, tokenId?, spentBy?}`: each enabled token's `/spends`, the first that names a spender |
+| `/amm/events` | Server-Sent Events, every enabled token's pool events: `event: pool`, `data: {tokenId, …row}` — the token instance's lookup's row as it admits a deploy, swap, close or rescind (or a `revert` of a rejected one), passed through; nothing on connect, nothing kept, nothing replayed |
+| `/@<token>/amm/events` | the same feed for one token |
+| `/@<token>/amm/pools` | the token's live pools (each with `poolId`, `lpPubKey`, `swaps`), its market, the validators beating (each with `minLegSats` when its beat's terms carry one); a plain read only |
+| `/@<token>/amm/pools/at?t=` | every pool listed at a time, as it stood then |
+| `/@<token>/amm/pools/history` (`?from&to&pool&limit&after`) | the raw pool history (deploy, swap, close, rescind), oldest first, paged forward by `next` |
+| `/@<token>/amm/trades` (`?from&to&limit&before&pool`, or `?txid=`) | the token's trade rows, newest first (each with `poolId` and `payoutPkh`) |
+| `/@<token>/amm/candles?tf&from&to` (`&series=fill` or `market`) | `fill` (default): one candle per non-empty bucket of trades (the instance's); `market` (the host's): the market price after each pool event, one candle per bucket holding an event |
+| `/@<token>/amm/stats` | the host's: `price` = the planner's `priceOf` over the pools `/@<token>/amm/pools` lists (the midpoint of what a buy and a sell of 1% of the pooled sats would pay now), `buyPrice`, `sellPrice`; `change1h` / `change24h` from the same price over the pools listed then (`/pools/at`); `lastTradePrice`, 24 h volume and counts, last trade; TVL and pools over the listed pools |
 | `/@<token>/amm/color/<token>/holders` (`?limit&skip`) | the holder count and the balances, largest first |
-| `/@<token>/amm/pools/beef`, `/positions`, `/fees/validator`, `/fees/commission`, `/terms`, `/spends`, `/tx`, `/swaps`, `/token` | as before (0.11.0) |
+| `/@<token>/amm/pools/beef?pool=`, `/positions?pool=` | by pool id (0.14.0) |
+| `/@<token>/amm/fees/validator`, `/fees/commission`, `/terms` (the validator's `minLegSats`), `/spends`, `/tx`, `/swaps`, `/token` | as before (0.11.0) |
 | `/amm/tokens`, `/@discovery/1color/tokens` (rows with `amount` and `height`), `/<token>`, `/<token>/icon`, `/<token>/deploy` | as before |
 
 ## The shape
@@ -62,9 +68,9 @@ passes anything, so the host's key may send these too.
 |---|---|---|---|
 | `enable {tokenId, beef?}` | row `enabled` under `amm/tokens`, the BEEF kept | `token-enabled {tokenId, beef, terms?, market?}` | see below |
 | `disable {tokenId}` | row `disabled` | `token-disabled {tokenId}` | stops the instance (disabled; off its libp2p node); never removes it |
-| `terms {tokenId, terms}` (0.12.0; `terms` the three fees or `null`) | nothing (the token instance's `amm/terms` is the record) | `token-terms {tokenId, terms}` | sends root's `terms` to the token's instance (`amm/validator`); not replayed at start |
+| `terms {tokenId, terms}` (0.12.0; `terms` the three fees, 0.14.0 with an optional `minLegSats` (sats), or `null`) | nothing (the token instance's `amm/terms` is the record) | `token-terms {tokenId, terms}` | sends root's `terms` to the token's instance (`amm/validator`); not replayed at start |
 | `discovery {on}` | `{on, since}` under `amm/discovery` | `discovery-on` / `discovery-off` | starts / stops `discovery` |
-| `defaults {terms?, market?}` | `amm/defaults` | none | the next `token-enabled` events carry them |
+| `defaults {terms?, market?}` (0.14.0: `terms` may carry `minLegSats`) | `amm/defaults` | none | the next `token-enabled` events carry them |
 | `claim` (box `amm/claim`, any sender; the first only) | `{claimant, since}` under `amm/claim` (read: `GET <swap>/amm/admin`) | `claimed {claimant}` | grants `amm.admin` on swap to the claimant (root's `grant`) |
 
 When `token-enabled` names a token that has no instance yet, the host:
