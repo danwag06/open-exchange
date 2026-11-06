@@ -29,7 +29,8 @@
 //                          /@<B>/amm/events and /amm/events send deploy, swap, swap, close (nothing on connect; A's
 //                          feed none); /@<B>/amm/pools/at, /pools/history, /trades, /candles (fill and market), /stats
 //                          (price over the listed pools); the host's /amm/stats, /amm/positions?pool=, /amm/spends;
-//                          B's holders
+//                          B's holders; then B's other lineage on a SECOND host (the fixtures' swap_token_change
+//                          competes with swap_tokens_in): deploy → sats-in swap → a swap WITH token change → its close
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -491,7 +492,7 @@ try {
   const fixturesZig = await (async () => { const st = sk.stores.openStoreFile(sk.indexStore.storeSpec(x!.db.get(A)!), { readOnly: true }); try { return new TextDecoder().decode(await tree.readFile(st as never, appRec.tree, "src/fixtures/vectors.zig")); } finally { st.close(); } })();
   const fx = (name: string) => Transaction.fromHex(new RegExp(`pub const ${name} = "([0-9a-f]+)"`).exec(fixturesZig)![1]!);
   const fxLp = /pub const lp = "([0-9a-f]+)"/.exec(fixturesZig)![1]!;
-  const order = ["fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close"];
+  const order = ["fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close", "swap_token_change", "close_after_token_change"];
   const ftx = new Map(order.map((n) => [n, fx(n)]));
   const byId = new Map([...ftx.values()].map((t) => [t.id("hex"), t]));
   let topH = 0;
@@ -539,8 +540,7 @@ try {
   check(fA.got.length === 0, `…A's feed sent none of B's (${fA.got.length})`);
   check(fB.got.length === 4 && fAll.got.length === 4, `…four events each, nothing else (${fB.got.length}, ${fAll.got.length})`);
   await Promise.all([fB.close(), fAll.close(), fA.close()]);
-  // STOPPED (Builder 3, 0.14.0): a swap with token change in this lineage — the fixtures' swap_token_change competes
-  // with swap_tokens_in, the only parent of close; no fixture spends a token-change swap's pool.
+  // The token-change lineage (swap_token_change competes with swap_tokens_in): on a second host, below.
 
   // the pool history reads at the times the events carry
   const [atD, atBuy, atSell, atClose] = [eDeploy, eBuy, eSell, eClose].map((e) => Number(e?.at));
@@ -589,6 +589,66 @@ try {
   check(sp?.length === 2 && sp[0]!.outpoint === deployOp && sp[0]!.tokenId === B && sp[0]!.spentBy === ftx.get("swap_bsv_in")!.id("hex") && sp[1]!.outpoint === closeOp && sp[1]!.spentBy === undefined && sp[1]!.tokenId === undefined && (await get("/amm/spends")).status === 400, `GET /amm/spends?outpoint=: the deploy's spender with its token, the close's output unspent; none 400 (${JSON.stringify(sp)})`);
   const hB = await getJson(`/@${B}/amm/color/${B}/holders`) as { count?: number; rows?: Array<{ address?: string; balance?: number }> } | undefined;
   check(!!hB && (hB.count ?? 0) >= 1 && hB.rows?.length === hB.count && hB.rows!.every((y, i) => i === 0 || (y.balance ?? 0) <= (hB.rows![i - 1]!.balance ?? 0)), `GET /@<B>/amm/color/<B>/holders: ${JSON.stringify(hB)?.slice(0, 200)}`);
+
+  // ------------------------------------------------ a swap WITH token change (0.14.0): B's other lineage on a second host
+  // (the fixtures' swap_token_change spends swap_bsv_in:0 as swap_tokens_in does, so one overlay holds one of them):
+  // deploy → sats-in swap → the tokens-in swap with 10,000 tokens of token change → close_after_token_change.
+  {
+    const home2 = mkdtempSync(join(tmpdir(), "ox-accept-2-"));
+    writeFileSync(join(home2, "key"), `${shared.toHex()}\n`, { mode: 0o600 });
+    const port2 = await freePort(), hostPort2 = await freePort(), p2pPort2 = await freePort();
+    writeFileSync(join(home2, "host.env"), [
+      `SKEIN_KEY_FILE=${join(home2, "key")}`,
+      ...(ROCKS ? [`SKEIN_STORE_ROCKSDB=${join(home2, "store-rocksdb")}`] : FILE ? [] : [`SKEIN_STORE_SQLITE=${join(home2, "store.sqlite")}`]),
+      `SKEIN_ROOT_INSTANCE=${SWAP}`, "SKEIN_NETWORK=regtest", `SKEIN_ROUTER_PORT=${port2}`, `SKEIN_HOST_PORT=${hostPort2}`, `SKEIN_HEADERS_URL=${feedUrl}`,
+      `SKEIN_ARC_URL=${arcade.url}`, "SKEIN_ARC_TOKEN=t", `SKEIN_ARC_EVENTS_URL=${arcade.eventsUrl}`, `SKEIN_LIBP2P_LISTEN=/ip4/127.0.0.1/tcp/${p2pPort2}`,
+      ...(kernel ? [`SKEIN_KERNEL_BIN=${kernel}`] : []), "",
+    ].join("\n"));
+    const lines2: string[] = [];
+    const env2: Env = { vars: { HOME: process.env.HOME, PATH: process.env.PATH, SKEIN_HOME: home2 }, out: (l) => { lines2.push(l); if (process.env.VERBOSE) process.stdout.write(`  2| ${l}\n`); }, err: (l) => { lines2.push(`ERR ${l}`); process.stdout.write(`  2! ${l}\n`); } };
+    const R2 = `http://127.0.0.1:${port2}`;
+    const get2 = async (path: string) => { const r = await fetch(`${R2}${path}`); return r.status === 200 ? await r.json() as unknown : undefined; };
+    let y: Running | undefined;
+    try {
+      const fr2 = await firstRun(sk, env2);
+      check(!fr2.failed, `second host: the first run (${fr2.made.join("; ")})`);
+      if (ROCKS) await sleep(1500);
+      y = await startExchange(sk, settings(sk, env2));
+      await y.exchange.idle();
+      await until("the second host's chain at the fixtures' roots", async () => { const t = await (await y!.host.router.hydrate(SWAP)).kernel.chainTip(); return t && t.height >= topH ? t : undefined; });
+      await y.exchange.rootMessage(SWAP, "amm/admin", { fn: "enable", args: { tokenId: B, beef: Uint8Array.from(ftx.get("token_deploy")!.toAtomicBEEF()) } });
+      check(!!(await until("/@B/amm/token on the second host", async () => (await fetch(`${R2}/@${B}/amm/token`)).status === 200 ? true : undefined, 60_000)), "second host: B enabled by root");
+      await y.exchange.idle();
+      check(!!(await until("B's validator beating on the second host", async () => ((await get2(`/@${B}/amm/pools`)) as { validators?: Array<{ identity?: string }> } | undefined)?.validators?.some((v) => v.identity === SHARED) ? true : undefined, 60_000)), "…its validator beating");
+      const feed2 = poolFeed(`${R2}/@${B}/amm/events`);
+      await until("the second host's feed", () => feed2.status() || undefined, 15_000);
+      const submit2 = async (n: string) => (await fetch(`${R2}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([tmB]) }, body: Uint8Array.from(ftx.get(n)!.toBEEF()) })).status;
+      const kinds: string[] = [];
+      for (const [n, kind] of [["pool_deploy", "deploy"], ["swap_bsv_in", "swap"], ["swap_token_change", "swap"], ["close_after_token_change", "close"]] as const) {
+        const st = await submit2(n);
+        const e = await until(`second host: ${n}'s event`, () => feed2.got.find((y) => y.txid === ftx.get(n)!.id("hex")), 30_000);
+        check(st === 200 && e?.kind === kind && e.poolId === poolB, `second host: ${n} submitted (${st}): event pool {kind ${String(e?.kind)}, poolId the deploy's}`);
+        if (e) kinds.push(String(e.kind));
+      }
+      const tcTx = ftx.get("swap_token_change")!;
+      const tcAmount = Number(/pub const swap_token_change_amount_in = (\d+);/.exec(fixturesZig)?.[1]);
+      const tcChange = Number(/pub const swap_token_change_tokens = (\d+);/.exec(fixturesZig)?.[1]);
+      const eTc = feed2.got.find((y) => y.txid === tcTx.id("hex"));
+      check(eTc?.side === "sell" && eTc.amountIn === tcAmount && eTc.swaps === 2 && eTc.outpoint === `${tcTx.id("hex")}_0` && tcTx.outputs.length === 7, `…the swap with token change: a sell of ${String(eTc?.amountIn)} (the vector's ${tcAmount}), swaps 2, its transaction carries the token change output (${tcChange} tokens back; ${tcTx.outputs.length} outputs)`);
+      const trTc = await get2(`/@${B}/amm/trades?txid=${tcTx.id("hex")}`) as Record<string, unknown> | undefined;
+      check(trTc?.side === "sell" && trTc.amountIn === tcAmount && trTc.poolId === poolB, `…its trade row: amountIn ${String(trTc?.amountIn)}, poolId the deploy's`);
+      const atTc = await get2(`/@${B}/amm/pools/at?t=${Number(eTc?.at)}`) as Array<Record<string, unknown>> | undefined;
+      const hist2 = await get2(`/@${B}/amm/pools/history?from=0`) as { events?: Array<Record<string, unknown>> } | undefined;
+      check(atTc?.length === 1 && atTc[0]!.outpoint === `${tcTx.id("hex")}_0` && hist2?.events?.map((e) => e.kind).join() === "deploy,swap,swap,close" && kinds.join() === "deploy,swap,swap,close", `…/pools/at the token-change swap's state at its time; /pools/history deploy, swap, swap, close (${hist2?.events?.map((e) => e.kind).join()})`);
+      const sp2 = await get2(`/amm/spends?outpoint=${ftx.get("swap_bsv_in")!.id("hex")}.0`) as Array<{ spentBy?: string }> | undefined;
+      check(sp2?.[0]?.spentBy === tcTx.id("hex"), `…/amm/spends: swap_bsv_in:0 spent by the token-change swap here (${String(sp2?.[0]?.spentBy).slice(0, 8)}…)`);
+      await feed2.close();
+    } finally {
+      await y?.stop().catch(() => {});
+      if (ROCKS) await sleep(1500);
+      if (!process.env.KEEP) rmSync(home2, { recursive: true, force: true });
+    }
+  }
 
   // ------------------------------------------------ disable, enable again
   await send({ fn: "disable", args: { tokenId: A } });
