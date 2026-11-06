@@ -368,7 +368,7 @@ test "the paid enable (0.15.0): enable-check refuses an unpriced route, a token 
     try testing.expect(std.mem.indexOf(u8, js, "\"paymentTxid\"") != null and std.mem.indexOf(u8, js, "\"deploy\"") == null);
 }
 
-test "price and withdraw (0.15.0): price {sats | null} → the record and enable-price; withdraw {lockingScript} → the event; bad args refused" {
+test "price and withdraw (0.15.0): price {sats | null} → the record and enable-price; withdraw {lockingScript} checked; the kept withdrawals; the builder's fee" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -389,7 +389,15 @@ test "price and withdraw (0.15.0): price {sats | null} → the record and enable
     try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"7\"}"))) == .bad);
     try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"zz\"}"))) == .bad);
     try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{}"))) == .bad);
-    const we = try paid.withdrawEvent(a, ws);
-    try testing.expectEqualStrings("withdraw", we.getText("event").?);
-    try testing.expectEqualStrings("76a914", we.getText("lockingScript").?);
+    // The kept withdrawals: n counts from 1; the BEEF kept.
+    const w1 = try paid.withWithdrawal(a, paid.withdrawalsOf(null), "aa" ** 32, 1500, 7, "BEEF1");
+    const w2 = try paid.withWithdrawal(a, paid.withdrawalsOf(w1), "bb" ** 32, 900, 9, "BEEF2");
+    const ws2 = paid.withdrawalsOf(w2);
+    try testing.expectEqual(@as(usize, 2), ws2.len);
+    try testing.expectEqual(@as(u64, 1), ws2[0].getUint("n").?);
+    try testing.expectEqual(@as(u64, 2), ws2[1].getUint("n").?);
+    try testing.expectEqualStrings("BEEF2", ws2[1].getBytes("beef").?);
+    // The builder's fee (skein-sdk builder.zig estimateFeeFor at 100 sat/kB): one coin, a 25-byte script: 226 bytes → 23 sats.
+    try testing.expectEqual(@as(u64, 23), paid.feeFor(1, 25, 100));
+    try testing.expectEqual(@as(u64, 38), paid.feeFor(2, 25, 100));
 }

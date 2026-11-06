@@ -770,6 +770,39 @@ try {
   // The coin in swap's wallet: GET /amm/wallet.
   const wal = await until("swap's wallet holds the payment", async () => { const v = await getJson("/amm/wallet") as { sats?: number; outputs?: number } | undefined; return v?.sats === 2000 ? v : undefined; });
   check(wal?.sats === 2000 && wal.outputs === 1, `GET /amm/wallet: ${JSON.stringify(wal ?? await get("/amm/wallet"))} (the payment, internalized by swap's wallet before the handler)`);
+  // The admin's withdraw: swap's own program launches its wallet — list, then one createAction of every coin to
+  // the script with no change; the wallet broadcasts it; proven, swap keeps the withdrawal.
+  const wd = new esm.P2PKH().lock(sk.hostenv.parseKey("6b".repeat(32), "withdraw").toPublicKey().toHash());
+  const wdHex = wd.toHex();
+  const posted0 = arcade.posts.length;
+  await send({ fn: "withdraw", args: { lockingScript: wdHex } });
+  const wtx = await until("the withdrawal at Arcade", () => arcade.posts.slice(posted0).map((b) => FakeArcade.txOf(b)).find((t) => t.outputs[0]?.lockingScript.toHex() === wdHex), 60_000);
+  const fee1 = Math.ceil((4 + 1 + 147 + 1 + (8 + 1 + 25) + (8 + 1 + 25) + 4) * 100 / 1000);
+  check(!!wtx && wtx.outputs.length === 1 && wtx.outputs[0]!.satoshis === 2000 - fee1 && wtx.inputs.length === 1, `withdraw: the wallet's one transaction to the script — ${wtx?.inputs.length} input, ${wtx?.outputs.length} output of ${wtx?.outputs[0]?.satoshis} sats (2000 less the fee ${fee1}), no change`);
+  const drained = await until("swap's wallet spent", async () => { const v = await getJson("/amm/wallet") as { sats?: number } | undefined; return v?.sats === 0 ? v : undefined; });
+  check(!!drained && (drained as { withdrawals?: unknown[] }).withdrawals?.length === 0, `GET /amm/wallet right after: ${JSON.stringify(drained)} (the coin spent; the withdrawal kept once proven)`);
+  if (wtx) {
+    const wtxid = wtx.id("hex");
+    const hW = mineAlone(wtx as never, esm.MerklePath);
+    pushHeader();
+    await until("swap's chain at the withdrawal's block", async () => { const t = await (await r.hydrate(SWAP)).kernel.chainTip(); return t && t.height >= hW ? t : undefined; });
+    arcade.emit(wtxid, { txStatus: "MINED", blockHash: Buffer.from(sha256d(headers.at(-1)!)).reverse().toString("hex"), blockHeight: hW, merklePath: (wtx.merklePath as unknown as { toHex(): string }).toHex() });
+    const kept = await until("the withdrawal kept", async () => { const v = await getJson("/amm/wallet") as { withdrawals?: Array<Record<string, unknown>> } | undefined; return v?.withdrawals?.length ? v : undefined; }, 60_000);
+    const w1 = kept?.withdrawals?.[0];
+    check(w1?.n === 1 && w1.txid === wtxid && w1.sats === 2000 - fee1 && typeof w1.at === "number", `withdraw proven: GET /amm/wallet withdrawals ${JSON.stringify(kept?.withdrawals)}`);
+    const wb = await fetch(`${R}/amm/wallet/tx?n=1`);
+    const wbb = new Uint8Array(await wb.arrayBuffer());
+    let subject = "";
+    try { subject = esm.Transaction.fromAtomicBEEF([...wbb]).id("hex"); } catch { /* checked below */ }
+    check(wb.status === 200 && wb.headers.get("content-type") === "application/octet-stream" && subject === wtxid, `GET /amm/wallet/tx?n=1: the withdrawal's Atomic BEEF (${wb.status}, ${wbb.length} bytes, subject ${subject.slice(0, 8)}…)`);
+    check((await get("/amm/wallet/tx?n=2")).status === 404, "GET /amm/wallet/tx?n=2: 404");
+  }
+  const wNothing = lines.length;
+  await send({ fn: "withdraw", args: { lockingScript: wdHex } });
+  await (await r.hydrate(SWAP)).kernel.idle();
+  await sleep(1500);
+  await x.exchange.idle();
+  check(arcade.posts.slice(posted0).filter((b) => FakeArcade.txOf(b).outputs[0]?.lockingScript.toHex() === wdHex).length === 1 && (await getJson("/amm/wallet") as { withdrawals?: unknown[] }).withdrawals?.length === 1, `withdraw again with nothing in the wallet: no transaction, nothing kept${lines.slice(wNothing).some((l) => /nothing to withdraw/.test(l)) ? " (logged: nothing to withdraw)" : ""}`);
   // Disabled by the admin: the paid route refuses it (only the admin enables it again).
   await send({ fn: "disable", args: { tokenId: P } });
   await until("P stopped", async () => (await get(`/@${P}/amm/token`)).status === 404 ? true : undefined);

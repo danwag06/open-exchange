@@ -2679,7 +2679,7 @@
       "get": {
         "operationId": "W2",
         "summary": "The exchange's wallet",
-        "description": "swap's core wallet as its state stands (the host reads `wallet/state`; no step): the coins its builder spends — outputs in the basket `default` with protocol `wallet payment` or `wallet change`, less those its own actions spent. `sats` their total, `outputs` their count.",
+        "description": "swap's core wallet as its state stands (the host reads `wallet/state`; no step): the coins its builder spends — outputs in the basket `default` with protocol `wallet payment` or `wallet change`, less those its own actions spent. `sats` their total, `outputs` their count. `withdrawals`: the admin's withdrawals (the swap app's head `amm/withdrawals`), each `{n, txid, sats, at}`, kept when the chain app reports the transaction proven.",
         "tags": [
           "host"
         ],
@@ -2697,18 +2697,103 @@
                     },
                     "outputs": {
                       "type": "integer"
+                    },
+                    "withdrawals": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "n": {
+                            "type": "integer"
+                          },
+                          "txid": {
+                            "type": "string"
+                          },
+                          "sats": {
+                            "type": "integer"
+                          },
+                          "at": {
+                            "type": "integer"
+                          }
+                        }
+                      }
                     }
                   }
                 },
                 "example": {
-                  "sats": 2000,
-                  "outputs": 1
+                  "sats": 0,
+                  "outputs": 0,
+                  "withdrawals": [
+                    {
+                      "n": 1,
+                      "txid": "65ca66d160bacbcb03227d44e071465280068d1c7472721df639119eaf147b45",
+                      "sats": 1977,
+                      "at": 1793948657845
+                    }
+                  ]
                 }
               }
             }
           }
         },
         "x-route": "W2",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "the host"
+      }
+    },
+    "/amm/wallet/tx": {
+      "get": {
+        "operationId": "W3",
+        "summary": "A withdrawal's transaction",
+        "description": "Withdrawal `n`'s Atomic BEEF, as the wallet built it (the admin's wallet takes it in as a payment).",
+        "tags": [
+          "host"
+        ],
+        "parameters": [
+          {
+            "name": "n",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Atomic BEEF",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`ERR_BAD_REQUEST`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`ERR_NOT_FOUND`: no such withdrawal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "W3",
         "x-cache": "none (no Cache-Control header)",
         "x-answered-by": "the host"
       }

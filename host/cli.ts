@@ -81,10 +81,10 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   // 0.13.0: GET /amm/stats and /amm/positions too; 0.14.0: /amm/spends, the market candles and the pool event
   // feeds (a token instance's emitted `pool` event goes to the feeds, not to swap's reactions).
   let pools: Pools | undefined;
-  // 0.15.0: GET /amm/wallet (wallet.ts), the host's read of swap's core wallet.
+  // 0.15.0: GET /amm/wallet and /amm/wallet/tx (wallet.ts), the host's reads of swap's core wallet and its withdrawals.
   let walletHost: Router | undefined;
   const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) =>
-    (walletHost ? await walletRead(sk, walletHost, SWAP, h, route) : undefined) ?? await pools?.appRead(h, route, url, req);
+    (walletHost ? await walletRead(sk, walletHost, SWAP, h, route, url) : undefined) ?? await pools?.appRead(h, route, url, req);
   const appEvent = (h: string, rec: Record<string, unknown>) => {
     if (pools?.poolEvent(h, rec)) return;
     if (ex) ex.event(h, rec); else early.push([h, rec]);

@@ -11,8 +11,14 @@
 //!   that token's deploy (tokens.zig `deployOf`, the admin enable's check). The handler then does what
 //!   the admin's enable does (the row, the event `token-enabled` with the defaults) and keeps
 //!   `{paidBy, paymentTxid, satoshisPaid}` on the row.
-//! - **The withdraw**, the admin's `withdraw {lockingScript}` (hex): the event
-//!   `{event: "withdraw", lockingScript}`; nothing kept here.
+//! - **The withdraw**, the admin's `withdraw {lockingScript}` (hex), run by this program against the
+//!   instance's own wallet (the genesis program `wallet`, launched: docs/WALLET.md "Its coins move on
+//!   the messages its threads take — … a program's that launches or calls it"): its coins (`list`),
+//!   then ONE `createAction` of every spendable coin to the script, the output the total less the fee
+//!   the wallet's builder charges (`feeFor`), so that it makes no change; the wallet broadcasts it
+//!   through the chain app. Its thread rests when the chain app reports it proven (or rejected); then
+//!   the withdrawal is kept under the head `amm/withdrawals`: `{kind: "amm-withdrawals", withdrawals:
+//!   [{n, txid, sats, at, beef}]}` (n from 1; `beef` the action's Atomic BEEF).
 const std = @import("std");
 const w = @import("chain");
 const tokens = @import("tokens.zig");
@@ -88,12 +94,49 @@ pub fn withdrawArg(a: Allocator, args: ?Value) !WithdrawArg {
     return .{ .ok = out };
 }
 
-/// `{event: "withdraw", lockingScript}`.
-pub fn withdrawEvent(a: Allocator, script_hex: []const u8) !Value {
-    return map(a, &.{
-        .{ .key = "event", .value = .{ .text = "withdraw" } },
-        .{ .key = "lockingScript", .value = .{ .text = script_hex } },
+pub const withdrawals_head = "amm/withdrawals";
+pub const withdrawals_kind = "amm-withdrawals";
+
+/// The kept withdrawals (none: no record).
+pub fn withdrawalsOf(rec: ?Value) []const Value {
+    const r = rec orelse return &.{};
+    if (!eql(u8, r.getText("kind") orelse "", withdrawals_kind)) return &.{};
+    return r.getArray("withdrawals") orelse &.{};
+}
+
+/// The record with one more withdrawal `{n, txid, sats, at, beef}`, n = the count so far + 1.
+pub fn withWithdrawal(a: Allocator, prev: []const Value, txid: []const u8, sats: u64, at: u64, beef: []const u8) !Value {
+    const all = try a.alloc(Value, prev.len + 1);
+    @memcpy(all[0..prev.len], prev);
+    all[prev.len] = try map(a, &.{
+        .{ .key = "n", .value = .{ .uint = prev.len + 1 } },
+        .{ .key = "txid", .value = .{ .text = txid } },
+        .{ .key = "sats", .value = .{ .uint = sats } },
+        .{ .key = "at", .value = .{ .uint = at } },
+        .{ .key = "beef", .value = .{ .bytes = beef } },
     });
+    return map(a, &.{
+        .{ .key = "kind", .value = .{ .text = withdrawals_kind } },
+        .{ .key = "withdrawals", .value = .{ .array = all } },
+    });
+}
+
+fn varintLen(n: u64) u64 {
+    return if (n < 0xfd) 1 else if (n <= 0xffff) 3 else if (n <= 0xffff_ffff) 5 else 9;
+}
+
+/// The fee the wallet's builder charges for `n` of its own coins (P2PKH, each unlock estimated at 106
+/// bytes) and one output of `script_len` bytes, a 25-byte change output included in the size
+/// (skein-sdk wallet/src/builder.zig `estimateFeeFor`; bsvz SatoshisPerKilobyte: ceil(size × rate / 1000)).
+/// With the output at the total less this fee, the change comes to zero and the builder drops it.
+pub fn feeFor(n: u64, script_len: u64, sats_per_kb: u64) u64 {
+    var size: u64 = 4 + varintLen(n);
+    size += n * (40 + varintLen(106) + 106);
+    size += varintLen(2);
+    size += 8 + varintLen(script_len) + script_len;
+    size += 8 + varintLen(25) + 25;
+    size += 4;
+    return (size * sats_per_kb + 999) / 1000;
 }
 
 // ---------------------------------------------------------------- the paid enable

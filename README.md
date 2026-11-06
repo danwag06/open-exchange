@@ -72,7 +72,7 @@ passes anything, so the host's key may send these too.
 | `discovery {on}` | `{on, since}` under `amm/discovery` | `discovery-on` / `discovery-off` | starts / stops `discovery` |
 | `defaults {terms?, market?}` (0.14.0: `terms` may carry `minLegSats`) | `amm/defaults` | none | the next `token-enabled` events carry them |
 | `price {sats \| null}` (0.15.0; the price to enable a token, null: off) | `{sats}` under `amm/enable-price` (read: `enablePriceSats` on `/amm/defaults`) | `enable-price {sats}` | sets the price of swap's route `POST /amm/enable` (root's `dispatch`: the same row with `price`, or without one); replayed at start |
-| `withdraw {lockingScript}` (0.15.0; hex) | nothing | `withdraw {lockingScript}` | not wired in 0.15.0 (no reaction) |
+| `withdraw {lockingScript}` (0.15.0; hex) | swap's own program launches the instance's wallet: its coins (`list`), then ONE `createAction` of every spendable coin to the script, the output the total less the builder's fee (no change); the wallet broadcasts it through the chain app; once proven, `{n, txid, sats, at}` and the Atomic BEEF under `amm/withdrawals` | none | nothing (no host reaction) |
 | `claim` (box `amm/claim`, any sender; the first only) | `{claimant, since}` under `amm/claim` (read: `GET <swap>/amm/admin`) | `claimed {claimant}` | grants `amm.admin` on swap to the claimant (root's `grant`) |
 
 When `token-enabled` names a token that has no instance yet, the host:
@@ -112,8 +112,10 @@ Reads on swap (anyone):
   `/@discovery/1color/<tokenId>/icon`; the data-URL `icon` is gone)
 - `/amm/defaults`: `{terms?, market?, enablePriceSats}` (0.15.0: `enablePriceSats` null when unset)
 - `/amm/discovery`: `{on, since}`
-- `/amm/wallet` (0.15.0, the host's read of swap's wallet state, no step): `{sats, outputs}` — the coins swap's
-  wallet spends (the paid enables' payments), their total and count
+- `/amm/wallet` (0.15.0, the host's read of swap's wallet state, no step): `{sats, outputs, withdrawals: [{n, txid,
+  sats, at}]}` — the coins swap's wallet spends (the paid enables' payments), their total and count, and the admin's
+  withdrawals (kept when proven)
+- `/amm/wallet/tx?n=<n>` (0.15.0): withdrawal n's Atomic BEEF (`application/octet-stream`; 404 when none)
 - `/`: the pages
 
 ## The paid enable (0.15.0)

@@ -2,10 +2,12 @@
 // option `appRead`, at swap) from swap's core wallet state — the head `wallet/state` and the records it
 // names, read from swap's store: no step, no log entry.
 //
-//   GET /amm/wallet   {sats, outputs}   the coins the wallet's builder spends (docs/WALLET.md, skein): its
-//                      outputs in the basket `default` with protocol `wallet payment` or `wallet change`
-//                      (the paid enables' payments, the wallet's change), less those its own actions
-//                      spent (the map `spent`); `sats` their total, `outputs` their count.
+//   GET /amm/wallet   {sats, outputs, withdrawals: [{n, txid, sats, at}]}   the coins the wallet's builder spends
+//                      (docs/WALLET.md, skein): its outputs in the basket `default` with protocol `wallet payment`
+//                      or `wallet change` (the paid enables' payments, the wallet's change), less those its own
+//                      actions spent (the map `spent`); `sats` their total, `outputs` their count; `withdrawals`
+//                      the swap app's head `amm/withdrawals` (the admin's withdrawals, kept when proven).
+//   GET /amm/wallet/tx?n=<n>   that withdrawal's Atomic BEEF (application/octet-stream); 404 when none.
 //
 // The wallet-state record: {kind: "wallet-state", maps: {actions, outputs, byBasket, spent, drafts}}, each a
 // merkle search tree [left, [[key, value, right], …]] (skein-sdk mst.zig); `outputs`: txid ‖ vout (u32 BE) →
@@ -19,11 +21,25 @@ type Rec = Record<string, unknown>;
 type Node = [CID | null, Array<[Uint8Array, unknown, CID | null]>];
 
 export const WALLET_ROUTE = "/amm/wallet";
+export const WALLET_TX_ROUTE = "/amm/wallet/tx";
+/** The swap app's kept withdrawals (apps/swap paid.zig). */
+export const WITHDRAWALS_HEAD = "amm/withdrawals";
 export const WALLET_HEAD = "wallet/state";
 /** The protocols of the coins the wallet's builder spends. */
 const SPENDABLE = new Set(["wallet payment", "wallet change"]);
 
-export interface WalletView { sats: number; outputs: number }
+export interface Withdrawal { n: number; txid: string; sats: number; at: number }
+export interface WalletView { sats: number; outputs: number; withdrawals: Withdrawal[] }
+
+/** swap's kept withdrawals, each with its Atomic BEEF (the head amm/withdrawals). */
+async function withdrawals(sk: Skein, router: Router, handle: string): Promise<Array<Withdrawal & { beef: Uint8Array }>> {
+  const l = await router.hydrate(handle);
+  const head = await l.kernel.call("head", WITHDRAWALS_HEAD) as CID | null;
+  if (!head) return [];
+  const rec = await l.kernel.store.get(head as never) as unknown as { kind?: string; withdrawals?: Array<Record<string, unknown>> };
+  if (rec?.kind !== "amm-withdrawals") return [];
+  return (rec.withdrawals ?? []).map((w) => ({ n: Number(w.n), txid: String(w.txid), sats: Number(w.sats), at: Number(w.at), beef: w.beef as Uint8Array }));
+}
 
 const isCid = (v: unknown): v is CID => !!v && typeof v === "object" && (v as { asCID?: unknown }).asCID === v;
 
@@ -59,7 +75,8 @@ export async function walletView(sk: Skein, router: Router, handle: string): Pro
   if (!row) throw new Error(`no instance ${handle}`);
   const l = await router.hydrate(handle);
   const head = await l.kernel.call("head", WALLET_HEAD) as CID | null;
-  if (!head) return { sats: 0, outputs: 0 };
+  const kept = (await withdrawals(sk, router, handle)).map(({ beef: _b, ...w }) => w);
+  if (!head) return { sats: 0, outputs: 0, withdrawals: kept };
   const st = sk.stores.openStoreFile(sk.indexStore.storeSpec(row), { readOnly: true });
   try {
     const state = await st.get(head as never) as unknown as { kind?: string; maps?: Record<string, CID | null> };
@@ -80,13 +97,22 @@ export async function walletView(sk: Skein, router: Router, handle: string): Pro
       sats += outputSats(await st.bytes(out.tx as never), Number(out.vout));
       outputs++;
     }
-    return { sats, outputs };
+    return { sats, outputs, withdrawals: kept };
   } finally { st.close(); }
 }
 
-/** RouterOptions.appRead's share: GET /amm/wallet at swap; anything else undefined. */
-export async function walletRead(sk: Skein, router: Router, swap: string, handle: string, route: string): Promise<RouterResponse | undefined> {
-  if (handle !== swap || route !== WALLET_ROUTE) return undefined;
+/** RouterOptions.appRead's share: GET /amm/wallet and /amm/wallet/tx?n= at swap; anything else undefined. */
+export async function walletRead(sk: Skein, router: Router, swap: string, handle: string, route: string, url: URL): Promise<RouterResponse | undefined> {
+  if (handle !== swap) return undefined;
+  const problem = (status: number, code: string, description: string): RouterResponse => ({ status, headers: { "content-type": "application/json" }, body: new TextEncoder().encode(JSON.stringify({ status: "error", code, description })) });
+  if (route === WALLET_TX_ROUTE) {
+    const n = Number(url.searchParams.get("n"));
+    if (!Number.isSafeInteger(n) || n < 1) return problem(400, "ERR_BAD_REQUEST", "want ?n=<the withdrawal's number, from 1>");
+    const w = (await withdrawals(sk, router, handle)).find((x) => x.n === n);
+    if (!w) return problem(404, "ERR_NOT_FOUND", `no withdrawal ${n}`);
+    return { status: 200, headers: { "content-type": "application/octet-stream" }, body: w.beef };
+  }
+  if (route !== WALLET_ROUTE) return undefined;
   let v: WalletView;
   try { v = await walletView(sk, router, handle); } catch (e) {
     return { status: 503, headers: { "content-type": "application/json" }, body: new TextEncoder().encode(JSON.stringify({ status: "error", code: "ERR_UNAVAILABLE", description: (e as Error).message })) };
