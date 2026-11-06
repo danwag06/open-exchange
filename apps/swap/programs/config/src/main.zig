@@ -28,11 +28,12 @@
 //!     {fn: "price", args: {sats | null}}   (0.15.0) the price to enable a token: the head
 //!                       `amm/enable-price` and the event `{event: "enable-price", sats}` (the host, as
 //!                       owner, sets the `/enable` route's `price`; null: off) (paid.zig).
-//!     {fn: "withdraw", args: {lockingScript}}   (0.15.0; hex) every coin of the instance's wallet to
-//!                       the script, by launching the genesis program `wallet`: `list`, then ONE
-//!                       `createAction` (the total less the builder's fee: no change); when its
-//!                       thread rests proven, `{n, txid, sats, at, beef}` kept under `amm/withdrawals`
-//!                       and answered; nothing to withdraw, or rejected: refused (paid.zig).
+//!     {fn: "withdraw"}   (0.15.2; no args) every coin of the instance's wallet paid to the sender
+//!                       (BRC-29, a payee key derived for it), by launching the genesis program
+//!                       `wallet`: `list`, then ONE noSend `createAction` (the total less the
+//!                       builder's fee: no change); kept under `amm/withdrawals` and answered with the
+//!                       payment `{n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix,
+//!                       senderIdentityKey, tx}`; nothing to withdraw: refused (paid.zig).
 //!   box `amm/claim` (kernel.beef; its function `claim` gated by no role: any sender; claim.zig):
 //!     {fn: "claim"}   the first: the head `amm/claim` `{claimant: <the sender>, since}` and the
 //!                       event `{event: "claimed", claimant: <hex>}` (the host grants it amm.admin);
@@ -62,6 +63,8 @@ const tokens = @import("tokens.zig");
 const discovery = @import("discovery.zig");
 const claim = @import("claim.zig");
 const paid = @import("paid.zig");
+const wl = @import("wallet");
+const ssk = @import("sk");
 const app = @import("app");
 const files = @import("files");
 const scbor = @import("sdk_cbor");
@@ -335,18 +338,17 @@ fn priceSet(a: Allocator, args: Value, body: Value) !void {
     return answerRoot(a, args, "price", try tokens.answer(a, "price", message, rec));
 }
 
-/// `withdraw {lockingScript}` (0.15.0): the instance's wallet (the genesis program `wallet`) launched
-/// twice from this thread — `list`, then one `createAction` of every spendable coin to the script
-/// with no change — and, when that thread rests proven, the withdrawal kept and answered.
+/// `withdraw` (0.15.2): a BRC-29 payment of every coin of the instance's wallet to the message's sender —
+/// the wallet (the genesis program `wallet`) launched twice from this thread: `list`, then one noSend
+/// `createAction`; its result (`{txid, tx}`) kept and answered at once.
 fn withdraw(a: Allocator, in: Value, args: Value, body: Value) !void {
     const message = args.getCid("message");
-    const script_hex = switch (try paid.withdrawArg(a, body.get("args"))) {
-        .bad => |why| return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "bad-args", why)),
-        .ok => |x| x,
-    };
+    if (paid.withdrawArgsProblem(body.get("args"))) |why| return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "bad-args", why));
+    const sender = args.getBytes("sender") orelse return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "no-sender", "a withdraw is a signed message: its sender is paid"));
+    if (sender.len != 33) return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "no-sender", "the sender is not an identity key"));
     const wallet = if (in.get("programs")) |ps| ps.getCid("wallet") else null;
     const prog = wallet orelse return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "no-wallet", "this instance's genesis has no wallet program"));
-    const resolved = in.get("resolved") orelse return launchWallet(a, prog, &.{.{ .key = "op", .value = .{ .text = "list" } }});
+    const resolved = in.get("resolved") orelse return launchWallet(a, prog, &.{.{ .key = "op", .value = .{ .text = "list" } }}, null);
     const r = resolved.array[0];
     const rec = (try walletResult(a, r)) orelse {
         const why = if (r.get("error")) |e| e.getText("message") orelse "the wallet's step failed" else "the wallet's step failed";
@@ -361,44 +363,66 @@ fn withdraw(a: Allocator, in: Value, args: Value, body: Value) !void {
         const total = rec.getUint("total") orelse 0;
         const rate_text = if (in.get("defaults")) |d| d.getText("walletFeeRate") orelse "100" else "100";
         const rate = std.fmt.parseInt(u64, rate_text, 10) catch 100;
-        const fee = paid.feeFor(n, script_hex.len / 2, rate);
+        const fee = paid.feeFor(n, 25, rate);
         if (n == 0 or total <= fee) return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "nothing-to-withdraw", try std.fmt.allocPrint(a, "nothing to withdraw: {d} sats in {d} coins, the fee {d}", .{ total, n, fee })));
-        const script = try a.alloc(u8, script_hex.len / 2);
-        _ = try std.fmt.hexToBytes(script, script_hex);
+        // The payee key, as the wallet's payHost derives a payee's: a fresh prefix and suffix (12 bytes each,
+        // base64, from the step's random), BRC-29's key id, counterparty the recipient, from the signer.
+        var rnd: [24]u8 = undefined;
+        ssk.io().randomSecure(&rnd) catch return error.RandomFailed;
+        const enc = std.base64.standard.Encoder;
+        const prefix = try a.alloc(u8, enc.calcSize(12));
+        const suffix = try a.alloc(u8, enc.calcSize(12));
+        _ = enc.encode(prefix, rnd[0..12]);
+        _ = enc.encode(suffix, rnd[12..24]);
+        const frame = try wl.wire.getPublicKeyFrameFor(a, wl.brc29.security_level, wl.brc29.protocol_name, try wl.brc29.keyId(a, prefix, suffix), .{ .other = sender[0..33].* }, false);
+        const payee = try wl.wire.publicKeyResult(try ssk.result(a, ssk.raw.wallet, .{ frame.ptr, @as(u32, @intCast(frame.len)) }));
+        const script = try a.dupe(u8, &wl.brc29.p2pkh(payee));
         const out = Value{ .map = try a.dupe(cbor.Entry, &.{
             .{ .key = "lockingScript", .value = .{ .bytes = script } },
             .{ .key = "satoshis", .value = .{ .uint = total - fee } },
             .{ .key = "outputDescription", .value = .{ .text = "Open Exchange withdraw" } },
         }) };
         const nth = paid.withdrawalsOf(try headRecord(a, paid.withdrawals_head)).len + 1;
+        const opts = Value{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "noSend", .value = .{ .boolean = true } }}) };
         return launchWallet(a, prog, &.{
             .{ .key = "op", .value = .{ .text = "createAction" } },
             .{ .key = "description", .value = .{ .text = try std.fmt.allocPrint(a, "Open Exchange withdraw {d}", .{nth}) } },
             .{ .key = "outputs", .value = .{ .array = try a.dupe(Value, &.{out}) } },
-            .{ .key = "labels", .value = .{ .array = try a.dupe(Value, &.{.{ .text = "amm withdraw" }}) } },
-        });
+            .{ .key = "options", .value = opts },
+        }, .{ .map = try a.dupe(cbor.Entry, &.{
+            .{ .key = "derivationPrefix", .value = .{ .text = prefix } },
+            .{ .key = "derivationSuffix", .value = .{ .text = suffix } },
+        }) });
     }
-    // The createAction's thread at rest: the chain app's last answer.
-    const outcome = rec.getText("outcome") orelse "";
-    if (!eql(u8, outcome, "proven")) return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "wallet", try std.fmt.allocPrint(a, "the withdrawal ended {s}{s}{s}", .{ if (outcome.len > 0) outcome else op, if (rec.getText("reason") != null) ": " else "", rec.getText("reason") orelse "" })));
+    if (!eql(u8, op, "createAction")) return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "wallet", try std.fmt.allocPrint(a, "the wallet answered {s}", .{op})));
+    // The noSend createAction at rest: its {txid, tx}; the derivation from the launch's own args.
     const txid = rec.getText("txid") orelse "";
-    const beef = (try ingestBeef(a, rec.getCid("ingest"))) orelse return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "wallet", "the withdrawal's BEEF is not readable"));
+    const beef = rec.getBytes("tx") orelse return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "wallet", "the wallet's createAction gave no transaction"));
+    const d = (try launchedDerivation(a, r)) orelse return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "wallet", "the withdrawal's derivation is not on its launch"));
     const sats = withdrawnSats(a, beef) orelse return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "wallet", "the withdrawal's BEEF names no output"));
+    const me = vm.selfKey(in) orelse return error.BadInput;
+    const x = paid.Withdrawal{ .txid = txid, .sats = sats, .at = now(in), .prefix = d.prefix, .suffix = d.suffix, .sender = try a.dupe(u8, &std.fmt.bytesToHex(me[0..33].*, .lower)), .beef = beef };
     const prev = paid.withdrawalsOf(try headRecord(a, paid.withdrawals_head));
-    const kept = try paid.withWithdrawal(a, prev, txid, sats, now(in), beef);
-    try vm.advance(paid.withdrawals_head, try vm.store().putValue(a, kept));
-    return answerRoot(a, args, "withdraw", try tokens.answer(a, "withdraw", message, .{ .map = try a.dupe(cbor.Entry, &.{
-        .{ .key = "n", .value = .{ .uint = prev.len + 1 } },
-        .{ .key = "txid", .value = .{ .text = txid } },
-        .{ .key = "sats", .value = .{ .uint = sats } },
-    }) }));
+    try vm.advance(paid.withdrawals_head, try vm.store().putValue(a, try paid.withWithdrawal(a, prev, x)));
+    return answerRoot(a, args, "withdraw", try tokens.answer(a, "withdraw", message, try paid.withdrawalValue(a, prev.len + 1, x, "tx")));
 }
 
-/// Launch the wallet on `{op, …}` (args `{body: <that record>}`); this thread waits on it.
-fn launchWallet(a: Allocator, prog: []const u8, fields: []const cbor.Entry) !void {
+/// The derivation the createAction's launch carried (its args' `withdrawal`), from the resolved thread's origin.
+fn launchedDerivation(a: Allocator, resolved: Value) !?struct { prefix: []const u8, suffix: []const u8 } {
+    const s = vm.store();
+    const origin = try s.getValue(a, resolved.getCid("thread") orelse return null);
+    // The kernel keeps a launched thread's args inline in its origin (scheduler.zig hLaunch).
+    const largs = origin.get("args") orelse return null;
+    const wd = largs.get("withdrawal") orelse return null;
+    return .{ .prefix = wd.getText("derivationPrefix") orelse return null, .suffix = wd.getText("derivationSuffix") orelse return null };
+}
+
+/// Launch the wallet on `{op, …}` (args `{body: <that record>, withdrawal?}`: the wallet reads `body`; `withdrawal`
+/// the payment's derivation, read back from the thread's origin when it rests); this thread waits on it.
+fn launchWallet(a: Allocator, prog: []const u8, fields: []const cbor.Entry, withdrawal: ?Value) !void {
     const s = vm.store();
     const body = try s.putValue(a, .{ .map = try a.dupe(cbor.Entry, fields) });
-    const args = try s.putValue(a, .{ .map = try a.dupe(cbor.Entry, &.{.{ .key = "body", .value = .{ .cid = body } }}) });
+    const args = try s.putValue(a, .{ .map = if (withdrawal) |wd| try a.dupe(cbor.Entry, &.{ .{ .key = "body", .value = .{ .cid = body } }, .{ .key = "withdrawal", .value = wd } }) else try a.dupe(cbor.Entry, &.{.{ .key = "body", .value = .{ .cid = body } }}) });
     _ = try vm.launch(a, prog, args);
 }
 
@@ -410,20 +434,6 @@ fn walletResult(a: Allocator, resolved: Value) !?Value {
     const cid = try a.alloc(u8, out.len / 2);
     _ = std.fmt.hexToBytes(cid, out) catch return null;
     return try vm.store().getValue(a, cid);
-}
-
-/// The Atomic BEEF of the wallet's `ingest` message to the chain app (`{fn: "ingest", args: {beef}}`).
-fn ingestBeef(a: Allocator, ingest: ?[]const u8) !?[]const u8 {
-    const s = vm.store();
-    const m = try s.getValue(a, ingest orelse return null);
-    const bc = m.getCid("body") orelse return null;
-    const b = try s.getValue(a, bc);
-    const x = (b.get("args") orelse return null).get("beef") orelse return null;
-    return switch (x) {
-        .bytes => |bytes| bytes,
-        .map => w.record.wireOf(a, s, x) catch null,
-        else => null,
-    };
 }
 
 /// Output 0's satoshis of the Atomic BEEF's subject transaction (the withdrawal's one output).

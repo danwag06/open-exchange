@@ -2679,7 +2679,7 @@
       "get": {
         "operationId": "W2",
         "summary": "The exchange's wallet",
-        "description": "swap's core wallet as its state stands (the host reads `wallet/state`; no step): the coins its builder spends — outputs in the basket `default` with protocol `wallet payment` or `wallet change`, less those its own actions spent. `sats` their total, `outputs` their count. `withdrawals`: the admin's withdrawals (the swap app's head `amm/withdrawals`), each `{n, txid, sats, at}`, kept when the chain app reports the transaction proven.",
+        "description": "swap's core wallet as its state stands (the host reads `wallet/state`; no step): the coins its builder spends — outputs in the basket `default` with protocol `wallet payment` or `wallet change`, less those its own actions spent. `sats` their total, `outputs` their count. `withdrawals`: the admin's withdrawals (the swap app's head `amm/withdrawals`), each a standard BRC-29 payment to the admin handed over unsent — `{n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey}`, what the admin's wallet takes it in with (internalizeAction, protocol `wallet payment`); kept when the wallet built it.",
         "tags": [
           "host"
         ],
@@ -2714,6 +2714,18 @@
                           },
                           "at": {
                             "type": "integer"
+                          },
+                          "outputIndex": {
+                            "type": "integer"
+                          },
+                          "derivationPrefix": {
+                            "type": "string"
+                          },
+                          "derivationSuffix": {
+                            "type": "string"
+                          },
+                          "senderIdentityKey": {
+                            "type": "string"
                           }
                         }
                       }
@@ -2726,9 +2738,13 @@
                   "withdrawals": [
                     {
                       "n": 1,
-                      "txid": "65ca66d160bacbcb03227d44e071465280068d1c7472721df639119eaf147b45",
+                      "txid": "9d2ee277a5aa05f45eed0476849d6888ade02d0e01603bcb237fa7e6f7eac26c",
                       "sats": 1977,
-                      "at": 1793948657845
+                      "at": 1793951789371,
+                      "outputIndex": 0,
+                      "derivationPrefix": "Kt2aMqdmHxNc19Dy",
+                      "derivationSuffix": "C03AgjsCs54bonOs",
+                      "senderIdentityKey": "03142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9"
                     }
                   ]
                 }
@@ -2745,7 +2761,7 @@
       "get": {
         "operationId": "W3",
         "summary": "A withdrawal's transaction",
-        "description": "Withdrawal `n`'s Atomic BEEF, as the wallet built it (the admin's wallet takes it in as a payment).",
+        "description": "Withdrawal `n`'s Atomic BEEF, as the wallet built it: the payment the admin's wallet takes in (and sends).",
         "tags": [
           "host"
         ],

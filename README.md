@@ -72,7 +72,7 @@ passes anything, so the host's key may send these too.
 | `discovery {on}` | `{on, since}` under `amm/discovery` | `discovery-on` / `discovery-off` | starts / stops `discovery` |
 | `defaults {terms?, market?}` (0.14.0: `terms` may carry `minLegSats`) | `amm/defaults` | none | the next `token-enabled` events carry them |
 | `price {sats \| null}` (0.15.0; the price to enable a token, null: off) | `{sats}` under `amm/enable-price` (read: `enablePriceSats` on `/amm/defaults`) | `enable-price {sats}` | sets the price of swap's route `POST /amm/enable` (root's `dispatch`: the same row with `price`, or without one); replayed at start |
-| `withdraw {lockingScript}` (0.15.0; hex) | swap's own program launches the instance's wallet: its coins (`list`), then ONE `createAction` of every spendable coin to the script, the output the total less the builder's fee (no change); the wallet broadcasts it through the chain app; once proven, `{n, txid, sats, at}` and the Atomic BEEF under `amm/withdrawals` | none | nothing (no host reaction) |
+| `withdraw` (0.15.2; no args) | a standard BRC-29 payment to the message's sender, built by swap's own program: the payee key derived for the admin (a fresh prefix and suffix, counterparty the admin), the instance's wallet launched — `list`, then ONE `createAction` with `noSend` of every spendable coin to that key, the total less the builder's fee (no change); kept under `amm/withdrawals` as `{n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey}` and the Atomic BEEF, and answered with the same and `tx`. Nothing is broadcast here: the admin's wallet takes the payment in, which puts it on the network | none | nothing |
 | `claim` (box `amm/claim`, any sender; the first only) | `{claimant, since}` under `amm/claim` (read: `GET <swap>/amm/admin`) | `claimed {claimant}` | grants `amm.admin` on swap to the claimant (root's `grant`) |
 
 When `token-enabled` names a token that has no instance yet, the host:
@@ -113,8 +113,8 @@ Reads on swap (anyone):
 - `/amm/defaults`: `{terms?, market?, enablePriceSats}` (0.15.0: `enablePriceSats` null when unset)
 - `/amm/discovery`: `{on, since}`
 - `/amm/wallet` (0.15.0, the host's read of swap's wallet state, no step): `{sats, outputs, withdrawals: [{n, txid,
-  sats, at}]}` — the coins swap's wallet spends (the paid enables' payments), their total and count, and the admin's
-  withdrawals (kept when proven)
+  sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey}]}` — the coins swap's wallet spends (the
+  paid enables' payments), their total and count, and the admin's withdrawals (each a BRC-29 payment handed over unsent)
 - `/amm/wallet/tx?n=<n>` (0.15.0): withdrawal n's Atomic BEEF (`application/octet-stream`; 404 when none)
 - `/`: the pages
 

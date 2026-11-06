@@ -22,6 +22,8 @@ const Mods = struct {
     cbor: *std.Build.Module,
     dagjson: *std.Build.Module,
     overlay_sk: *std.Build.Module,
+    /// The SDK's wallet library (0.15.2: BRC-29 and the signer's wire frames, for the withdraw's payee key).
+    wallet: *std.Build.Module,
 };
 
 fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) Mods {
@@ -47,6 +49,7 @@ fn mods(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.O
         .cbor = sdk.module("cbor"),
         .dagjson = sdk.module("dagjson"),
         .overlay_sk = ov.module("sk"),
+        .wallet = sdk.module("wallet"),
     };
 }
 
@@ -61,6 +64,7 @@ fn imports(b: *std.Build, m: Mods) []const std.Build.Module.Import {
         .{ .name = "sdk_cbor", .module = m.cbor },
         .{ .name = "dagjson", .module = m.dagjson },
         .{ .name = "overlay_sk", .module = m.overlay_sk },
+        .{ .name = "wallet", .module = m.wallet },
     }) catch @panic("OOM");
 }
 

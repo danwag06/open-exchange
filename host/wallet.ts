@@ -2,11 +2,12 @@
 // option `appRead`, at swap) from swap's core wallet state — the head `wallet/state` and the records it
 // names, read from swap's store: no step, no log entry.
 //
-//   GET /amm/wallet   {sats, outputs, withdrawals: [{n, txid, sats, at}]}   the coins the wallet's builder spends
+//   GET /amm/wallet   {sats, outputs, withdrawals: [{n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey}]}   the coins the wallet's builder spends
 //                      (docs/WALLET.md, skein): its outputs in the basket `default` with protocol `wallet payment`
 //                      or `wallet change` (the paid enables' payments, the wallet's change), less those its own
 //                      actions spent (the map `spent`); `sats` their total, `outputs` their count; `withdrawals`
-//                      the swap app's head `amm/withdrawals` (the admin's withdrawals, kept when proven).
+//                      the swap app's head `amm/withdrawals` (0.15.2: the admin's withdrawals, each a BRC-29 payment
+//                      handed over unsent, kept when the wallet built it).
 //   GET /amm/wallet/tx?n=<n>   that withdrawal's Atomic BEEF (application/octet-stream); 404 when none.
 //
 // The wallet-state record: {kind: "wallet-state", maps: {actions, outputs, byBasket, spent, drafts}}, each a
@@ -28,7 +29,8 @@ export const WALLET_HEAD = "wallet/state";
 /** The protocols of the coins the wallet's builder spends. */
 const SPENDABLE = new Set(["wallet payment", "wallet change"]);
 
-export interface Withdrawal { n: number; txid: string; sats: number; at: number }
+/** A withdrawal (0.15.2): a BRC-29 payment to the admin — its output and the derivation the admin's wallet takes it in with. */
+export interface Withdrawal { n: number; txid: string; sats: number; at: number; outputIndex: number; derivationPrefix: string; derivationSuffix: string; senderIdentityKey: string }
 export interface WalletView { sats: number; outputs: number; withdrawals: Withdrawal[] }
 
 /** swap's kept withdrawals, each with its Atomic BEEF (the head amm/withdrawals). */
@@ -38,7 +40,10 @@ async function withdrawals(sk: Skein, router: Router, handle: string): Promise<A
   if (!head) return [];
   const rec = await l.kernel.store.get(head as never) as unknown as { kind?: string; withdrawals?: Array<Record<string, unknown>> };
   if (rec?.kind !== "amm-withdrawals") return [];
-  return (rec.withdrawals ?? []).map((w) => ({ n: Number(w.n), txid: String(w.txid), sats: Number(w.sats), at: Number(w.at), beef: w.beef as Uint8Array }));
+  return (rec.withdrawals ?? []).map((w) => ({
+    n: Number(w.n), txid: String(w.txid), sats: Number(w.sats), at: Number(w.at), outputIndex: Number(w.outputIndex),
+    derivationPrefix: String(w.derivationPrefix), derivationSuffix: String(w.derivationSuffix), senderIdentityKey: String(w.senderIdentityKey), beef: w.beef as Uint8Array,
+  }));
 }
 
 const isCid = (v: unknown): v is CID => !!v && typeof v === "object" && (v as { asCID?: unknown }).asCID === v;

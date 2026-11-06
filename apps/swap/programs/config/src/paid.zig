@@ -11,14 +11,16 @@
 //!   that token's deploy (tokens.zig `deployOf`, the admin enable's check). The handler then does what
 //!   the admin's enable does (the row, the event `token-enabled` with the defaults) and keeps
 //!   `{paidBy, paymentTxid, satoshisPaid}` on the row.
-//! - **The withdraw**, the admin's `withdraw {lockingScript}` (hex), run by this program against the
-//!   instance's own wallet (the genesis program `wallet`, launched: docs/WALLET.md "Its coins move on
-//!   the messages its threads take — … a program's that launches or calls it"): its coins (`list`),
-//!   then ONE `createAction` of every spendable coin to the script, the output the total less the fee
-//!   the wallet's builder charges (`feeFor`), so that it makes no change; the wallet broadcasts it
-//!   through the chain app. Its thread rests when the chain app reports it proven (or rejected); then
-//!   the withdrawal is kept under the head `amm/withdrawals`: `{kind: "amm-withdrawals", withdrawals:
-//!   [{n, txid, sats, at, beef}]}` (n from 1; `beef` the action's Atomic BEEF).
+//! - **The withdraw**, the admin's `withdraw` (no arguments): a standard BRC-29 payment to the message's
+//!   signed sender. A derivation prefix and suffix drawn as the wallet program's `payHost` draws them;
+//!   the payee key from the signer (protocol `[2, "3241645161d8"]`, key id `"<prefix> <suffix>"`,
+//!   counterparty the admin); the instance's own wallet (the genesis program `wallet`, launched): its
+//!   coins (`list`), then ONE `createAction` with `options.noSend` of every spendable coin to that
+//!   P2PKH, the output the total less the fee the builder charges (`feeFor`), so that it makes no
+//!   change. Nothing goes to the chain app: the admin's wallet takes the payment in, which puts it on
+//!   the network. Kept under the head `amm/withdrawals`: `{kind: "amm-withdrawals", withdrawals: [{n,
+//!   txid, sats, at, outputIndex: 0, derivationPrefix, derivationSuffix, senderIdentityKey, beef}]}`
+//!   (n from 1; `beef` the action's Atomic BEEF).
 const std = @import("std");
 const w = @import("chain");
 const tokens = @import("tokens.zig");
@@ -76,22 +78,12 @@ pub fn priceEvent(a: Allocator, sats: ?u64) !Value {
 
 // ---------------------------------------------------------------- the withdraw
 
-pub const WithdrawArg = union(enum) { ok: []const u8, bad: []const u8 };
-
-/// The admin's `withdraw` args → the locking script (hex, lower case).
-pub fn withdrawArg(a: Allocator, args: ?Value) !WithdrawArg {
-    const want = "want args {lockingScript: <hex>}";
-    const x = args orelse return .{ .bad = want };
-    if (x != .map) return .{ .bad = want };
-    for (x.map) |e| if (!eql(u8, e.key, "lockingScript")) return .{ .bad = want };
-    const s = x.getText("lockingScript") orelse return .{ .bad = want };
-    if (s.len == 0 or s.len % 2 != 0) return .{ .bad = want };
-    const out = try a.alloc(u8, s.len);
-    for (s, out) |c, *o| {
-        if (!std.ascii.isHex(c)) return .{ .bad = want };
-        o.* = std.ascii.toLower(c);
-    }
-    return .{ .ok = out };
+/// The admin's `withdraw` args: none (absent, null or `{}`); else why not.
+pub fn withdrawArgsProblem(args: ?Value) ?[]const u8 {
+    const x = args orelse return null;
+    if (x == .null) return null;
+    if (x == .map and x.map.len == 0) return null;
+    return "withdraw takes no args: the payment goes to the message's sender";
 }
 
 pub const withdrawals_head = "amm/withdrawals";
@@ -104,17 +96,38 @@ pub fn withdrawalsOf(rec: ?Value) []const Value {
     return r.getArray("withdrawals") orelse &.{};
 }
 
-/// The record with one more withdrawal `{n, txid, sats, at, beef}`, n = the count so far + 1.
-pub fn withWithdrawal(a: Allocator, prev: []const Value, txid: []const u8, sats: u64, at: u64, beef: []const u8) !Value {
+/// A withdrawal: what the record keeps of it (and the answer, without `beef`).
+pub const Withdrawal = struct {
+    txid: []const u8,
+    sats: u64,
+    at: u64,
+    prefix: []const u8,
+    suffix: []const u8,
+    /// This instance's identity key (hex): the payment's sender, the recipient's counterparty.
+    sender: []const u8,
+    beef: []const u8,
+};
+
+/// The withdrawal's fields as kept, `n` its number; with `beef` (the record) or `tx` (the answer) as the BEEF's key.
+pub fn withdrawalValue(a: Allocator, n: u64, x: Withdrawal, beef_key: []const u8) !Value {
+    return map(a, &.{
+        .{ .key = "n", .value = .{ .uint = n } },
+        .{ .key = "txid", .value = .{ .text = x.txid } },
+        .{ .key = "sats", .value = .{ .uint = x.sats } },
+        .{ .key = "at", .value = .{ .uint = x.at } },
+        .{ .key = "outputIndex", .value = .{ .uint = 0 } },
+        .{ .key = "derivationPrefix", .value = .{ .text = x.prefix } },
+        .{ .key = "derivationSuffix", .value = .{ .text = x.suffix } },
+        .{ .key = "senderIdentityKey", .value = .{ .text = x.sender } },
+        .{ .key = beef_key, .value = .{ .bytes = x.beef } },
+    });
+}
+
+/// The record with one more withdrawal, n = the count so far + 1.
+pub fn withWithdrawal(a: Allocator, prev: []const Value, x: Withdrawal) !Value {
     const all = try a.alloc(Value, prev.len + 1);
     @memcpy(all[0..prev.len], prev);
-    all[prev.len] = try map(a, &.{
-        .{ .key = "n", .value = .{ .uint = prev.len + 1 } },
-        .{ .key = "txid", .value = .{ .text = txid } },
-        .{ .key = "sats", .value = .{ .uint = sats } },
-        .{ .key = "at", .value = .{ .uint = at } },
-        .{ .key = "beef", .value = .{ .bytes = beef } },
-    });
+    all[prev.len] = try withdrawalValue(a, prev.len + 1, x, "beef");
     return map(a, &.{
         .{ .key = "kind", .value = .{ .text = withdrawals_kind } },
         .{ .key = "withdrawals", .value = .{ .array = all } },

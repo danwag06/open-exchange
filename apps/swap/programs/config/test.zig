@@ -368,7 +368,7 @@ test "the paid enable (0.15.0): enable-check refuses an unpriced route, a token 
     try testing.expect(std.mem.indexOf(u8, js, "\"paymentTxid\"") != null and std.mem.indexOf(u8, js, "\"deploy\"") == null);
 }
 
-test "price and withdraw (0.15.0): price {sats | null} → the record and enable-price; withdraw {lockingScript} checked; the kept withdrawals; the builder's fee" {
+test "price and withdraw (0.15.0): price {sats | null} → the record and enable-price; withdraw takes no args; the kept withdrawals and the answer (the payment's derivation and sender); the builder's fee" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -384,19 +384,26 @@ test "price and withdraw (0.15.0): price {sats | null} → the record and enable
     try testing.expectEqualStrings("enable-price", ev.getText("event").?);
     try testing.expectEqual(@as(u64, 2500), ev.getUint("sats").?);
     try testing.expect((try paid.priceEvent(a, null)).get("sats").? == .null);
-    const ws = (try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"76A914\"}"))).ok;
-    try testing.expectEqualStrings("76a914", ws);
-    try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"7\"}"))) == .bad);
-    try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"zz\"}"))) == .bad);
-    try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{}"))) == .bad);
-    // The kept withdrawals: n counts from 1; the BEEF kept.
-    const w1 = try paid.withWithdrawal(a, paid.withdrawalsOf(null), "aa" ** 32, 1500, 7, "BEEF1");
-    const w2 = try paid.withWithdrawal(a, paid.withdrawalsOf(w1), "bb" ** 32, 900, 9, "BEEF2");
+    // withdraw takes no args (the payment goes to the message's sender).
+    try testing.expect(paid.withdrawArgsProblem(null) == null);
+    try testing.expect(paid.withdrawArgsProblem(try dagjsonValue(a, "{}")) == null);
+    try testing.expect(paid.withdrawArgsProblem(try dagjsonValue(a, "{\"lockingScript\":\"76a9\"}")) != null);
+    // The kept withdrawals: n counts from 1; the record keeps the BEEF as `beef`, the answer gives it as `tx`.
+    const x1 = paid.Withdrawal{ .txid = "aa" ** 32, .sats = 1500, .at = 7, .prefix = "cHJl", .suffix = "c3Vm", .sender = "02" ++ "33" ** 32, .beef = "BEEF1" };
+    const w1 = try paid.withWithdrawal(a, paid.withdrawalsOf(null), x1);
+    const w2 = try paid.withWithdrawal(a, paid.withdrawalsOf(w1), .{ .txid = "bb" ** 32, .sats = 900, .at = 9, .prefix = "p2", .suffix = "s2", .sender = x1.sender, .beef = "BEEF2" });
     const ws2 = paid.withdrawalsOf(w2);
     try testing.expectEqual(@as(usize, 2), ws2.len);
     try testing.expectEqual(@as(u64, 1), ws2[0].getUint("n").?);
     try testing.expectEqual(@as(u64, 2), ws2[1].getUint("n").?);
+    try testing.expectEqual(@as(u64, 0), ws2[0].getUint("outputIndex").?);
+    try testing.expectEqualStrings("cHJl", ws2[0].getText("derivationPrefix").?);
+    try testing.expectEqualStrings("c3Vm", ws2[0].getText("derivationSuffix").?);
+    try testing.expectEqualStrings(x1.sender, ws2[0].getText("senderIdentityKey").?);
     try testing.expectEqualStrings("BEEF2", ws2[1].getBytes("beef").?);
+    const ans = try paid.withdrawalValue(a, 1, x1, "tx");
+    try testing.expectEqualStrings("BEEF1", ans.getBytes("tx").?);
+    try testing.expect(ans.get("beef") == null);
     // The builder's fee (skein-sdk builder.zig estimateFeeFor at 100 sat/kB): one coin, a 25-byte script: 226 bytes → 23 sats.
     try testing.expectEqual(@as(u64, 23), paid.feeFor(1, 25, 100));
     try testing.expectEqual(@as(u64, 38), paid.feeFor(2, 25, 100));
