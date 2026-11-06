@@ -229,7 +229,7 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    try testing.expectEqualStrings("0.15.2", scbor.Value.str(m.get("version")).?);
+    try testing.expectEqualStrings("0.15.3", scbor.Value.str(m.get("version")).?);
     // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
     // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
     // anything); claim is listed in no role.
@@ -252,6 +252,11 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
             try testing.expectEqualStrings("config.configure", scbor.Value.str(r.get("handler")).?);
             seen |= 1;
         }
+        // 0.15.3: the paid enable's payment to the wallet, from the instance itself.
+        if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "pay")) {
+            try testing.expectEqualStrings("kernel.beef", scbor.Value.str(r.get("filters").?.array[0]).?);
+            try testing.expectEqualStrings("config.pay", scbor.Value.str(r.get("handler")).?);
+        }
         if (std.mem.eql(u8, t, "mailbox") and std.mem.eql(u8, addr, "claim")) {
             try testing.expectEqualStrings("config.claim", scbor.Value.str(r.get("handler")).?);
             seen |= 2;
@@ -265,11 +270,11 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/tokens")) seen |= 4;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/")) seen |= 16;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/defaults")) seen |= 32;
-        // 0.15.0: the paid enable — enable-check sits before kernel.pay; the handler enablePaid.
+        // 0.15.3: the paid enable — a BEEF submission: kernel.brc104, kernel.beef, enable-check; the handler enablePaid.
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/enable")) {
             const fs = r.get("filters").?.array;
-            try testing.expectEqual(@as(usize, 4), fs.len);
-            for ([_][]const u8{ "kernel.brc104", "kernel.beef", "enable-check", "kernel.pay" }, fs) |want, f| try testing.expectEqualStrings(want, scbor.Value.str(f).?);
+            try testing.expectEqual(@as(usize, 3), fs.len);
+            for ([_][]const u8{ "kernel.brc104", "kernel.beef", "enable-check" }, fs) |want, f| try testing.expectEqualStrings(want, scbor.Value.str(f).?);
             try testing.expectEqualStrings("config.enablePaid", scbor.Value.str(r.get("handler")).?);
             try testing.expect(r.get("price") == null); // the host sets it, from the admin's price
             seen |= 128;
@@ -328,47 +333,68 @@ test "the claim: the first one recorded {claimant, since} and the event claimed 
     try testing.expect(tokens.isAnswer(try tokens.answer(a, "claim", &w.store.hashCid(.tx, .{2} ** 32), try claim.result(a, &key))));
 }
 
-test "the paid enable (0.15.0): enable-check refuses an unpriced route, a token on the list (enabled, or disabled by the admin), a BEEF not its deploy; else passes; the row keeps the payment" {
+test "the paid enable (0.15.3): one BEEF with the deploy and the payment; enable-check refuses in order — off, no token id, on the list, no deploy, no payment named or not in it (402), under the price (402), replayed (409); else passes with the deploy's own Atomic BEEF; the row keeps the payment" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     const raw = unhex(a, vec.token_deploy);
-    const txid = try displayHex(a, w.beef.txidOf(raw));
-    const beef = try atomic(a, raw);
+    const fund = unhex(a, vec.fund);
+    const dtx = w.beef.txidOf(raw);
+    const ptx = w.beef.txidOf(fund);
+    const txid = try displayHex(a, dtx);
+    const ptxid = try displayHex(a, ptx);
+    var entries = [_]w.beef.Entry{ .{ .txid = dtx, .format = .raw, .raw = raw }, .{ .txid = ptx, .format = .raw, .raw = fund } };
+    const bundle = try w.beef.serialize(a, .{ .version = w.beef.V2, .bumps = &.{}, .entries = &entries });
     const id = try std.fmt.allocPrint(a, "{s}_0", .{txid});
-    // The token id from the query, any id form.
-    try testing.expectEqualStrings(id, (try paid.queryTokenId(a, try std.fmt.allocPrint(a, "?tokenId={s}", .{id}))).?);
+    const sats = (try paid.outputIn(a, bundle, ptx, 0)).?.satoshis;
+    const q = try std.fmt.allocPrint(a, "?tokenId={s}&paymentTxid={s}&paymentVout=0&derivationPrefix=cHJl%2Bx%3D%3D&derivationSuffix=c3Vm", .{ id, ptxid });
+    // The query: the token id in any form; the payment named, percent-decoded.
     try testing.expectEqualStrings(id, (try paid.queryTokenId(a, try std.fmt.allocPrint(a, "?x=1&tokenId={s}.0", .{txid}))).?);
-    try testing.expect((try paid.queryTokenId(a, "?x=1")) == null);
-    // No price: off, whatever else.
-    const off = (try paid.check(a, 0, &.{}, id, beef)).refused;
-    try testing.expectEqual(@as(u16, 403), off.status);
-    try testing.expectEqualStrings("ERR_PAID_ENABLE_OFF", off.code);
-    // Priced, not on the list, its deploy: passes with the deploy.
-    const ok = (try paid.check(a, 1000, &.{}, id, beef)).ok;
-    try testing.expectEqualStrings(id, ok.token_id);
-    // No token id; no BEEF; another token's id.
-    try testing.expectEqual(@as(u16, 400), (try paid.check(a, 1000, &.{}, null, beef)).refused.status);
-    try testing.expectEqualStrings("ERR_BAD_DEPLOY", (try paid.check(a, 1000, &.{}, id, null)).refused.code);
-    try testing.expectEqualStrings("ERR_BAD_DEPLOY", (try paid.check(a, 1000, &.{}, try std.fmt.allocPrint(a, "{s}_0", .{"ab" ** 32}), beef)).refused.code);
-    // On the list: enabled → 409 enabled; disabled by the admin → 409 disabled (a blacklist for the paid route).
-    const row = try tokens.enabledRow(a, ok, 7, .{ .bytes = beef });
-    const on = (try paid.check(a, 1000, &.{row}, id, beef)).refused;
-    try testing.expectEqual(@as(u16, 409), on.status);
-    try testing.expectEqualStrings("ERR_TOKEN_ENABLED", on.code);
-    const dis = try tokens.updated(a, row, .disabled, &.{}, &.{});
-    try testing.expectEqualStrings("ERR_TOKEN_DISABLED", (try paid.check(a, 1000, &.{dis}, id, beef)).refused.code);
+    const named = (try paid.queryPayment(a, q)).?;
+    try testing.expectEqualStrings("cHJl+x==", named.prefix);
+    try testing.expectEqual(@as(u32, 0), named.vout);
+    try testing.expect((try paid.queryPayment(a, try std.fmt.allocPrint(a, "?tokenId={s}", .{id}))) == null);
+    // Off, whatever else.
+    try testing.expectEqualStrings("ERR_PAID_ENABLE_OFF", (try paid.check(a, null, &.{}, q, bundle, false)).refused.code);
+    // Passes: the deploy, the payment, the deploy's own Atomic BEEF (its subject the deploy).
+    const ok = (try paid.check(a, sats, &.{}, q, bundle, false)).ok;
+    try testing.expectEqualStrings(id, ok.deploy.token_id);
+    try testing.expectEqualSlices(u8, &ptx, &ok.payment.txid);
+    try testing.expect((try tokens.deployOf(a, id, ok.deploy_beef)) == .ok);
+    try testing.expect((try tokens.deployOf(a, id, bundle)) == .refused); // the bundle's own subject is its last transaction
+    // No token id; no BEEF; another token's id (its deploy is not in the BEEF).
+    try testing.expectEqual(@as(u16, 400), (try paid.check(a, sats, &.{}, "?paymentTxid=00", bundle, false)).refused.status);
+    try testing.expectEqualStrings("ERR_BAD_DEPLOY", (try paid.check(a, sats, &.{}, q, null, false)).refused.code);
+    const other = try std.fmt.allocPrint(a, "?tokenId={s}_0&paymentTxid={s}&paymentVout=0&derivationPrefix=p&derivationSuffix=s", .{ "ab" ** 32, ptxid });
+    try testing.expectEqualStrings("ERR_BAD_DEPLOY", (try paid.check(a, sats, &.{}, other, bundle, false)).refused.code);
+    // On the list: 409 enabled; disabled by the admin: 409 disabled.
+    const row = try tokens.enabledRow(a, ok.deploy, 7, .{ .bytes = ok.deploy_beef });
+    try testing.expectEqualStrings("ERR_TOKEN_ENABLED", (try paid.check(a, sats, &.{row}, q, bundle, false)).refused.code);
+    try testing.expectEqualStrings("ERR_TOKEN_DISABLED", (try paid.check(a, sats, &.{try tokens.updated(a, row, .disabled, &.{}, &.{})}, q, bundle, false)).refused.code);
+    // No payment named; the named output not in the BEEF: 402 with the price.
+    const none = (try paid.check(a, sats, &.{}, try std.fmt.allocPrint(a, "?tokenId={s}", .{id}), bundle, false)).refused;
+    try testing.expectEqual(@as(u16, 402), none.status);
+    try testing.expectEqualStrings("ERR_PAYMENT_REQUIRED", none.code);
+    try testing.expectEqual(@as(?u64, sats), none.satoshis_required);
+    const absent = try std.fmt.allocPrint(a, "?tokenId={s}&paymentTxid={s}&paymentVout=0&derivationPrefix=p&derivationSuffix=s", .{ id, "cd" ** 32 });
+    try testing.expectEqualStrings("ERR_PAYMENT_REQUIRED", (try paid.check(a, sats, &.{}, absent, bundle, false)).refused.code);
+    // Under the price: 402 too small; replayed: 409.
+    const small = (try paid.check(a, sats + 1, &.{}, q, bundle, false)).refused;
+    try testing.expectEqual(@as(u16, 402), small.status);
+    try testing.expectEqualStrings("ERR_PAYMENT_TOO_SMALL", small.code);
+    try testing.expectEqualStrings("ERR_PAYMENT_REPLAYED", (try paid.check(a, sats, &.{}, q, bundle, true)).refused.code);
+    // The 402 answer carries satoshisRequired.
+    const ans = try paid.rejectAnswer(a, none);
+    try testing.expect(std.mem.indexOf(u8, ans.get("answer").?.getBytes("body").?, "\"satoshisRequired\"") != null);
     // The paid row: the enable's row and the payment; never the deploy in the read.
     const payer = [_]u8{0x02} ++ [_]u8{0x11} ** 32;
-    const pr = try paid.paidRow(a, row, &payer, "cd" ** 32, 1000);
-    try testing.expectEqualStrings("enabled", pr.getText("status").?);
+    const pr = try paid.paidRow(a, row, &payer, ptxid, sats);
     try testing.expectEqualStrings("02" ++ "11" ** 32, pr.getText("paidBy").?);
-    try testing.expectEqual(@as(u64, 1000), pr.getUint("satoshisPaid").?);
     const js = try tokens.tokensJson(a, &.{pr});
     try testing.expect(std.mem.indexOf(u8, js, "\"paymentTxid\"") != null and std.mem.indexOf(u8, js, "\"deploy\"") == null);
 }
 
-test "price and withdraw (0.15.0): price {sats | null} → the record and enable-price; withdraw takes no args; the kept withdrawals and the answer (the payment's derivation and sender); the builder's fee" {
+test "price and withdraw (0.15.0): price {sats | null} → the record (0.15.3: no event); withdraw takes no args; the kept withdrawals and the answer (the payment's derivation and sender); the builder's fee" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -380,10 +406,6 @@ test "price and withdraw (0.15.0): price {sats | null} → the record and enable
     try testing.expectEqual(@as(?u64, 2500), paid.priceOf(try paid.priceRecord(a, 2500)));
     try testing.expectEqual(@as(?u64, null), paid.priceOf(try paid.priceRecord(a, null)));
     try testing.expectEqual(@as(?u64, null), paid.priceOf(null));
-    const ev = try paid.priceEvent(a, 2500);
-    try testing.expectEqualStrings("enable-price", ev.getText("event").?);
-    try testing.expectEqual(@as(u64, 2500), ev.getUint("sats").?);
-    try testing.expect((try paid.priceEvent(a, null)).get("sats").? == .null);
     // withdraw takes no args (the payment goes to the message's sender).
     try testing.expect(paid.withdrawArgsProblem(null) == null);
     try testing.expect(paid.withdrawArgsProblem(try dagjsonValue(a, "{}")) == null);

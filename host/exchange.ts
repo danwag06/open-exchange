@@ -16,11 +16,6 @@
 //       `terms` message into amm/validator (`terms` a map, or null = market only), as at creation. No
 //       instance: logged, nothing else. Not replayed at start: the instance keeps its own amm/terms.
 //   discovery-on / discovery-off  the instance `discovery` (made on the first run) started / stopped.
-//   enable-price {sats}           (0.15.0) the admin's price to enable a token (null: off): the host, as owner
-//       (root on swap), sets the price of swap's route POST /amm/enable (the swap app's row; kernel.pay charges
-//       it) by root's `dispatch` add of the same row with `price` (null: the row without one; the swap app's
-//       filter enable-check refuses an unpriced route). Replayed at start (the reconcile, after the swap app's
-//       install, which writes the row without a price) from swap's /amm/defaults `enablePriceSats`.
 //   claimed {claimant}            (0.5.0) the first wallet's claim on swap: the role `amm.admin` granted to
 //       the claimant on swap by root's `grant` (the host's key is root on swap: swap is born owned by
 //       it); the claimant configures (the box amm/admin), it is not root. Already granted: nothing sent.
@@ -38,8 +33,6 @@ export const DISCOVERY = "discovery";
 /** The swap app's name: the events are its (the record's `app`, the kernel's). */
 export const SWAP_APP = "amm";
 export const TOKEN_IMAGE = "token";
-/** The paid enable's route on swap (0.15.0: the swap app's http route /enable, as the table holds it). */
-export const ENABLE_ROUTE = `/${SWAP_APP}/enable`;
 /** The role swap's claimant is granted (the swap app's role admin, which gates the box amm/admin). */
 export const ADMIN_ROLE = `${SWAP_APP}.admin`;
 const KEY = /^0[23][0-9a-f]{64}$/;
@@ -91,7 +84,6 @@ export class Exchange {
         case "discovery-on": return this.discovery(true);
         case "discovery-off": return this.discovery(false);
         case "claimed": return this.claimed(rec);
-        case "enable-price": return this.enablePrice(rec.sats);
         default: this.say(`swap: event ${name}: no reaction`); return Promise.resolve();
       }
     };
@@ -178,19 +170,6 @@ export class Exchange {
     if (!(await this.holders(SWAP, "root")).includes(this.o.hostKey)) { this.say(`claimed: ${k.slice(0, 8)}… claimed ${SWAP}, but the host's key is not root on ${SWAP} (an install made by 0.3.0–0.4.5): ${ADMIN_ROLE} NOT granted`); return; }
     await this.rootMessage(SWAP, "grant", { op: "add", role: ADMIN_ROLE, principal: Uint8Array.from(Buffer.from(k, "hex")) });
     this.say(`claimed: ${ADMIN_ROLE} on ${SWAP} granted to ${k}`);
-  }
-
-  /** 0.15.0: the /amm/enable route's price on swap (root's dispatch add of its row with `price`, or without one for null). */
-  async enablePrice(sats: unknown): Promise<void> {
-    const price = typeof sats === "number" || typeof sats === "bigint" ? Number(sats) : null;
-    if (price !== null && !(Number.isSafeInteger(price) && price > 0)) { this.say(`enable-price: ${JSON.stringify(String(sats))} is not a price in sats: ignored`); return; }
-    const l = await this.r.hydrate(SWAP);
-    const row = (await l.kernel.dispatch()).rows.find((r) => r.transport === "http" && r.address === ENABLE_ROUTE && (r as Rec).app === SWAP_APP);
-    if (!row) { this.say(`enable-price: swap has no route ${ENABLE_ROUTE} (its swap app predates 0.15.0): nothing set`); return; }
-    const { price: had, ...rest } = row as Rec;
-    if ((had ?? null) === price) { this.say(`enable-price: ${ENABLE_ROUTE} at ${price === null ? "no price (off)" : `${price} sats`} already`); return; }
-    await this.rootMessage(SWAP, "dispatch", { op: "add", row: price === null ? rest : { ...rest, price } });
-    this.say(`enable-price: ${ENABLE_ROUTE} ${price === null ? "unpriced (the paid enable is off)" : `priced at ${price} sats`}`);
   }
 
   // ---------------------------------------------------------------- the steps
@@ -347,9 +326,6 @@ export class Exchange {
       // swap's claimant holds amm.admin (the grant may have been lost between the claim and the reaction).
       const adm = await this.swapRead("admin").catch(() => ({})) as { claimant?: string };
       if (adm.claimant) await this.claimed({ claimant: adm.claimant });
-      // 0.15.0: the paid enable's price on its route, from swap's record (an install writes the row unpriced).
-      const df = await this.swapRead("defaults") as { enablePriceSats?: number | null };
-      await this.enablePrice(df.enablePriceSats ?? null);
       this.say(`reconcile: ${tokens.filter((t) => t.status === "enabled").length} enabled, ${tokens.filter((t) => t.status === "disabled").length} disabled on swap; discovery ${d.on ? "on" : "off"}`);
     });
   }

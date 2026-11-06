@@ -26,8 +26,7 @@
 //!     {fn: "discovery", args: {on}}   the head `amm/discovery` `{on, since}` and the event
 //!                       `discovery-on` / `discovery-off` (discovery.zig).
 //!     {fn: "price", args: {sats | null}}   (0.15.0) the price to enable a token: the head
-//!                       `amm/enable-price` and the event `{event: "enable-price", sats}` (the host, as
-//!                       owner, sets the `/enable` route's `price`; null: off) (paid.zig).
+//!                       `amm/enable-price` (null: off); `enable-check` reads it (0.15.3: no event) (paid.zig).
 //!     {fn: "withdraw"}   (0.15.2; no args) every coin of the instance's wallet paid to the sender
 //!                       (BRC-29, a payee key derived for it), by launching the genesis program
 //!                       `wallet`: `list`, then ONE noSend `createAction` (the total less the
@@ -51,11 +50,16 @@
 //!   admin     `/admin`: `{claimant, since}`, or `{}` unclaimed (claim.zig `json`)
 //!   serve     `/` (prefix): the Swap pages, www/ of the app's own tree (skein-sdk `files.serve`)
 //!
-//! **The paid enable** (0.15.0; paid.zig): `POST /enable?tokenId=<txid>_<vout>`, the body the deploy's
-//! Atomic BEEF; filters kernel.brc104, kernel.beef, then this app's `enable-check` (fn `enableCheck`:
-//! refuses an unpriced route, a token on the list, a BEEF that is not the token's deploy — before
-//! kernel.pay asks for money), then kernel.pay; the handler `enablePaid` does what the admin's enable
-//! does and keeps `{paidBy, paymentTxid, satoshisPaid}` on the row.
+//! **The paid enable** (0.15.3; paid.zig): `POST /enable?tokenId=&paymentTxid=&paymentVout=&derivationPrefix=
+//! &derivationSuffix=`, the body ONE BEEF with the token's deploy and the payment; filters kernel.brc104,
+//! kernel.beef, then this app's `enable-check` (fn `enableCheck`); the handler `enablePaid` checks the payment
+//! pays the BRC-29 key derived for the sender, sends it to the box `amm/pay` (a loopback message: its step
+//! launches the wallet's `internalize`, which sends the payment on through the chain app; the request does not
+//! wait for it), and does what the admin's enable does, keeping `{paidBy, paymentTxid, satoshisPaid}`.
+//!
+//!   box `amm/pay` (kernel.beef; from this instance only): {fn: "pay", args: {tx, outputIndex,
+//!                       derivationPrefix, derivationSuffix, senderIdentityKey}}   the wallet launched on
+//!                       `internalize` (protocol `wallet payment`); nothing answered.
 const std = @import("std");
 const w = @import("chain");
 const vm = @import("overlay_sk");
@@ -140,40 +144,121 @@ fn bodyWire(a: Allocator, arg: Value) ?[]const u8 {
     return w.record.wireOf(a, vm.store(), env) catch null;
 }
 
-/// The filter `enable-check` (0.15.0): before kernel.pay, the paid enable's refusals (paid.zig `check`).
+/// Whether the instance's wallet holds an action for `txid` (its `wallet/state` map `actions`, read only).
+fn walletHolds(a: Allocator, txid: [32]u8) !bool {
+    const rec = (try headRecord(a, "wallet/state")) orelse return false;
+    if (!eql(u8, rec.getText("kind") orelse "", "wallet-state")) return false;
+    const maps = rec.get("maps") orelse return false;
+    const actions = maps.getCid("actions") orelse return false;
+    const m = try w.store.Maps.create(a, vm.store());
+    var mp = m.map(actions);
+    return mp.has(&txid);
+}
+
+fn problemJson(a: Allocator, status: u16, code: []const u8, description: []const u8) !Value {
+    var out: std.Io.Writer.Allocating = .init(a);
+    var jw: std.json.Stringify = .{ .writer = &out.writer };
+    try jw.write(.{ .status = "error", .code = code, .description = description });
+    return httpJson(a, status, out.written());
+}
+
+/// The filter `enable-check` (0.15.3): the paid enable's refusals, before anything is recorded (paid.zig `check`).
 fn enableCheck(a: Allocator, arg: Value) !Value {
-    const price: u64 = if (arg.get("match")) |m| m.getUint("price") orelse 0 else 0;
-    const id = try paid.queryTokenId(a, arg.getText("query") orelse "");
-    return switch (try paid.check(a, price, tokens.rowsOf(try headRecord(a, tokens.tokens_head)), id, bodyWire(a, arg))) {
+    const query = arg.getText("query") orelse "";
+    const held = if (try paid.queryPayment(a, query)) |n| try walletHolds(a, n.txid) else false;
+    return switch (try paid.check(a, paid.priceOf(try headRecord(a, paid.price_head)), tokens.rowsOf(try headRecord(a, tokens.tokens_head)), query, bodyWire(a, arg), held)) {
         .refused => |r| try paid.rejectAnswer(a, r),
         .ok => try paid.passAnswer(a),
     };
 }
 
-/// The handler `enablePaid` (0.15.0): the admin's enable — the row, the event token-enabled with the
-/// defaults — and the payment on the row; answered `{fn: "enable", result: <the row>}`.
+/// The handler `enablePaid` (0.15.3): the payment's output must pay the BRC-29 key derived for the signed sender
+/// (key id "<prefix> <suffix>", counterparty the sender, for self) — else 400, nothing enabled; then the payment to
+/// the wallet (the loopback message to `amm/pay`, not waited for), and the admin's enable: the row with the payment,
+/// the event token-enabled with the defaults (its BEEF the deploy's, Atomic); answered `{fn: "enable", result: <the row>}`.
 fn enablePaid(a: Allocator, in: Value, arg: Value) !Value {
-    const id = (try paid.queryTokenId(a, arg.getText("query") orelse "")) orelse return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_BAD_REQUEST\",\"description\":\"want ?tokenId=<txid>_<vout>\"}");
-    const pay = arg.get("payment") orelse return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_PAYMENT_REQUIRED\",\"description\":\"no payment\"}");
-    const wire = bodyWire(a, arg) orelse return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_BAD_DEPLOY\",\"description\":\"want the body: the deploy's Atomic BEEF\"}");
-    const d = switch (try tokens.deployOf(a, id, wire)) {
-        .refused => |why| return httpJson(a, 400, try std.fmt.allocPrint(a, "{{\"status\":\"error\",\"code\":\"ERR_BAD_DEPLOY\",\"description\":{f}}}", .{std.json.fmt(why, .{})})),
+    const query = arg.getText("query") orelse "";
+    const wire = bodyWire(a, arg) orelse return problemJson(a, 400, "ERR_BAD_DEPLOY", "want the body: one BEEF holding the token's deploy and the payment");
+    const rows = tokens.rowsOf(try headRecord(a, tokens.tokens_head));
+    const held = if (try paid.queryPayment(a, query)) |n| try walletHolds(a, n.txid) else false;
+    const ok = switch (try paid.check(a, paid.priceOf(try headRecord(a, paid.price_head)), rows, query, wire, held)) {
+        .refused => |r| return problemJson(a, r.status, r.code, r.reason),
         .ok => |x| x,
     };
-    const by = pay.getBytes("sender") orelse arg.getBytes("caller") orelse "";
-    if (by.len != 33) return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_PAYMENT_REQUIRED\",\"description\":\"the payment names no sender\"}");
-    const row = try paid.paidRow(a, try tokens.enabledRow(a, d, now(in), arg.get("body").?), by, pay.getText("txid") orelse "", pay.getUint("satoshisPaid") orelse 0);
+    const sender = arg.getBytes("caller") orelse return problemJson(a, 401, "ERR_UNAUTHORIZED", "a paid enable is signed: its sender is the payer");
+    if (sender.len != 33) return problemJson(a, 401, "ERR_UNAUTHORIZED", "the sender is not an identity key");
+    const np = ok.payment;
+    const out = (try paid.outputIn(a, wire, np.txid, np.vout)).?;
+    // The key this payment must pay: BRC-29, the standard way (counterparty the sender, for self), from the signer.
+    const frame = try wl.wire.getPublicKeyFrameFor(a, wl.brc29.security_level, wl.brc29.protocol_name, try wl.brc29.keyId(a, np.prefix, np.suffix), .{ .other = sender[0..33].* }, true);
+    const key = try wl.wire.publicKeyResult(try ssk.result(a, ssk.raw.wallet, .{ frame.ptr, @as(u32, @intCast(frame.len)) }));
+    if (!eql(u8, out.script, &wl.brc29.p2pkh(key))) return problemJson(a, 400, "ERR_INVALID_PAYMENT", "the payment output does not pay this exchange's BRC-29 key for the sender and the named derivation");
+    const sender_hex = try a.dupe(u8, &std.fmt.bytesToHex(sender[0..33].*, .lower));
+    const me = vm.selfKey(in) orelse return error.BadInput;
+    _ = try vm.send(a, me, paid.pay_box, .{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "fn", .value = .{ .text = "pay" } },
+        .{ .key = "args", .value = .{ .map = try a.dupe(cbor.Entry, &.{
+            .{ .key = "tx", .value = .{ .bytes = try paid.atomicFor(a, wire, np.txid) } },
+            .{ .key = "outputIndex", .value = .{ .uint = np.vout } },
+            .{ .key = "derivationPrefix", .value = .{ .text = np.prefix } },
+            .{ .key = "derivationSuffix", .value = .{ .text = np.suffix } },
+            .{ .key = "senderIdentityKey", .value = .{ .text = sender_hex } },
+            .{ .key = "description", .value = .{ .text = try std.fmt.allocPrint(a, "Open Exchange enable {s}", .{ok.deploy.token_id}) } },
+        }) } },
+    }) });
+    const row = try paid.paidRow(a, try tokens.enabledRow(a, ok.deploy, now(in), .{ .bytes = ok.deploy_beef }), sender, np.txid_hex, out.satoshis);
     try saveRow(a, row);
-    _ = try vm.emitEvent(a, try tokens.enabledEvent(a, d.token_id, wire, try headRecord(a, tokens.defaults_head)));
-    var out: std.Io.Writer.Allocating = .init(a);
-    var jw: std.json.Stringify = .{ .writer = &out.writer };
+    _ = try vm.emitEvent(a, try tokens.enabledEvent(a, ok.deploy.token_id, ok.deploy_beef, try headRecord(a, tokens.defaults_head)));
+    var o: std.Io.Writer.Allocating = .init(a);
+    var jw: std.json.Stringify = .{ .writer = &o.writer };
     try jw.beginObject();
     try jw.objectField("fn");
     try jw.write("enable");
     try jw.objectField("result");
     try tokens.writeJson(&jw, try tokens.shown(a, row));
     try jw.endObject();
-    return httpJson(a, 200, out.written());
+    return httpJson(a, 200, o.written());
+}
+
+/// The box `amm/pay` (0.15.3): a paid enable's payment, from this instance only, to its wallet — the genesis program
+/// `wallet` launched on `internalize` (a wallet payment); its thread rests on the chain app's last answer, nothing
+/// answers anyone.
+fn payIn(a: Allocator, in: Value, args: Value, body: Value) !void {
+    if (in.get("resolved") != null) {
+        _ = try vm.finish(a, vm.store(), try resultRecord(a, "pay", &.{}));
+        return;
+    }
+    const me = vm.selfKey(in) orelse return error.BadInput;
+    const sender = args.getBytes("sender") orelse "";
+    if (!eql(u8, sender, me)) {
+        std.log.err("pay: refused: only this instance sends to {s}", .{paid.pay_box});
+        _ = try vm.finish(a, vm.store(), try resultRecord(a, "pay", &.{}));
+        return;
+    }
+    const x = body.get("args") orelse return error.BadInput;
+    const env = x.get("tx") orelse return error.BadInput;
+    const tx: []const u8 = switch (env) {
+        .bytes => |b| b,
+        .map => try w.record.wireOf(a, vm.store(), env),
+        else => return error.BadInput,
+    };
+    const prog = (if (in.get("programs")) |ps| ps.getCid("wallet") else null) orelse return error.BadInput;
+    const rem = Value{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "derivationPrefix", .value = .{ .text = x.getText("derivationPrefix") orelse return error.BadInput } },
+        .{ .key = "derivationSuffix", .value = .{ .text = x.getText("derivationSuffix") orelse return error.BadInput } },
+        .{ .key = "senderIdentityKey", .value = .{ .text = x.getText("senderIdentityKey") orelse return error.BadInput } },
+    }) };
+    const output = Value{ .map = try a.dupe(cbor.Entry, &.{
+        .{ .key = "outputIndex", .value = .{ .uint = x.getUint("outputIndex") orelse return error.BadInput } },
+        .{ .key = "protocol", .value = .{ .text = "wallet payment" } },
+        .{ .key = "paymentRemittance", .value = rem },
+    }) };
+    return launchWallet(a, prog, &.{
+        .{ .key = "op", .value = .{ .text = "internalize" } },
+        .{ .key = "tx", .value = .{ .bytes = tx } },
+        .{ .key = "outputs", .value = .{ .array = try a.dupe(Value, &.{output}) } },
+        .{ .key = "description", .value = .{ .text = x.getText("description") orelse "Open Exchange enable" } },
+    }, null);
 }
 
 fn toSdk(a: Allocator, v: Value) !scbor.Value {
@@ -208,6 +293,7 @@ fn step(a: Allocator, in: Value) !void {
     const args = in.get("args") orelse return error.BadInput;
     const box = args.getText("box") orelse "";
     const body = try s.getValue(a, args.getCid("body") orelse return error.BadInput);
+    if (eql(u8, box, paid.pay_box)) return payIn(a, in, args, body);
     const is_claim = eql(u8, box, claim.box);
     if (!is_claim and !eql(u8, box, tokens.admin_box)) return error.BadInput;
     if (tokens.isAnswer(body)) {
@@ -325,7 +411,7 @@ fn discoverySet(a: Allocator, in: Value, args: Value, body: Value) !void {
     return answerRoot(a, args, "discovery", try tokens.answer(a, "discovery", message, rec));
 }
 
-/// `price {sats | null}` (0.15.0): the record and the event enable-price.
+/// `price {sats | null}` (0.15.0; 0.15.3: the record only).
 fn priceSet(a: Allocator, args: Value, body: Value) !void {
     const message = args.getCid("message");
     const sats = switch (paid.priceArg(body.get("args"))) {
@@ -334,7 +420,6 @@ fn priceSet(a: Allocator, args: Value, body: Value) !void {
     };
     const rec = try paid.priceRecord(a, sats);
     try vm.advance(paid.price_head, try vm.store().putValue(a, rec));
-    _ = try vm.emitEvent(a, try paid.priceEvent(a, sats));
     return answerRoot(a, args, "price", try tokens.answer(a, "price", message, rec));
 }
 

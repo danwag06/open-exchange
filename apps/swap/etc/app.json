@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "amm",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "programs": {
     "config": "bin/config.wasm"
   },
@@ -37,6 +37,13 @@
       "handler": "config.claim"
     },
     {
+      "address": "pay",
+      "filters": [
+        "kernel.beef"
+      ],
+      "handler": "config.pay"
+    },
+    {
       "transport": "http",
       "address": "/tokens",
       "filters": [
@@ -70,8 +77,7 @@
       "filters": [
         "kernel.brc104",
         "kernel.beef",
-        "enable-check",
-        "kernel.pay"
+        "enable-check"
       ],
       "handler": "config.enablePaid"
     },
@@ -86,5 +92,5 @@
       "index": "index.html"
     }
   ],
-  "description": "The Open Exchange's SWAP app (shruggr/open-exchange#1; skein-amm's config app 0.22.0, moved and changed, shruggr/skein#164): the instance `swap` that serves the Swap pages and records root's decisions as facts, each emitted as an event the Open Exchange host reacts to; nothing is asked of an instance manager and nothing answers back. swap is born owned by the host's key (root); the first wallet to claim it becomes its admin (0.5.0). The admin's (or root's) messages in the box amm/admin (its route's function `configure` gated by the role admin, granted as amm.admin by the host on the event claimed; root passes anything; the door's kernel.beef checks a BEEF against the host chain, so the chain app is required): {fn: \"enable\", args: {tokenId: \"<txid>_<vout>\", beef?}} — the BEEF's subject the token id's transaction and its output <vout> a BRC-162 / BRC-161 deploy, else refused; beef may be left out for a token on the list (its kept deploy) — the row enabled under amm/tokens and the event {event: \"token-enabled\", tokenId, beef, terms?, market?} (the defaults at that step); {fn: \"disable\", args: {tokenId}}: the row disabled, the event {event: \"token-disabled\", tokenId}; {fn: \"defaults\", args: {terms?: {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?} | null, market?: {minCommissionBps} | null}}: the defaults under amm/defaults (partial; null clears one), carried by the next token-enabled events; {fn: \"discovery\", args: {on: true|false}}: the record {on, since} under amm/discovery and the event discovery-on / discovery-off. {fn: \"price\", args: {sats | null}} (0.15.0): the price to enable a token under amm/enable-price and the event enable-price {sats} (the host, as owner, sets the /enable route's price; null: off); {fn: \"withdraw\"} (0.15.2; no args): a BRC-29 payment of every coin to the message's sender — the payee key derived for it, the instance's wallet launched (list, then one noSend createAction, no change) — kept under amm/withdrawals {n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey, beef} and answered with it (tx the Atomic BEEF); nothing is broadcast: the admin's wallet takes it in. The claim, {fn: \"claim\"} in the box amm/claim (any sender): the first writes amm/claim {claimant, since} and emits {event: \"claimed\", claimant: <hex>}, answered {fn: \"claim\", result: {claimant}}; a later one refused (claimed). Each answered to the sender in its box {fn, request, result | error}. The paid enable (0.15.0), POST /enable?tokenId=<txid>_<vout> with the deploy's Atomic BEEF as the body (filters kernel.brc104, kernel.beef, enable-check, kernel.pay; the route's price set by the host): enable-check refuses an unpriced route (403), a token on the list, enabled or disabled by the admin (409), a BEEF not the token's deploy (400), before the payment; the handler enables as the admin's enable does and keeps {paidBy, paymentTxid, satoshisPaid} on the row. Reads (anyone, nothing logged): /tokens, the enable list [{tokenId, topic, sym, dec, icon?, status: enabled|disabled, since}] newest first; /defaults, {terms?, market?, enablePriceSats}; /discovery, {on, since} (or {on: false}); /admin, {claimant, since} (or {} unclaimed); / the Swap pages (www/); a token's instance is <origin>/@<tokenId>."
+  "description": "The Open Exchange's SWAP app (shruggr/open-exchange#1; skein-amm's config app 0.22.0, moved and changed, shruggr/skein#164): the instance `swap` that serves the Swap pages and records root's decisions as facts, each emitted as an event the Open Exchange host reacts to; nothing is asked of an instance manager and nothing answers back. swap is born owned by the host's key (root); the first wallet to claim it becomes its admin (0.5.0). The admin's (or root's) messages in the box amm/admin (its route's function `configure` gated by the role admin, granted as amm.admin by the host on the event claimed; root passes anything; the door's kernel.beef checks a BEEF against the host chain, so the chain app is required): {fn: \"enable\", args: {tokenId: \"<txid>_<vout>\", beef?}} — the BEEF's subject the token id's transaction and its output <vout> a BRC-162 / BRC-161 deploy, else refused; beef may be left out for a token on the list (its kept deploy) — the row enabled under amm/tokens and the event {event: \"token-enabled\", tokenId, beef, terms?, market?} (the defaults at that step); {fn: \"disable\", args: {tokenId}}: the row disabled, the event {event: \"token-disabled\", tokenId}; {fn: \"defaults\", args: {terms?: {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?} | null, market?: {minCommissionBps} | null}}: the defaults under amm/defaults (partial; null clears one), carried by the next token-enabled events; {fn: \"discovery\", args: {on: true|false}}: the record {on, since} under amm/discovery and the event discovery-on / discovery-off. {fn: \"price\", args: {sats | null}} (0.15.0): the price to enable a token under amm/enable-price (null: off; 0.15.3: no event); {fn: \"withdraw\"} (0.15.2; no args): a BRC-29 payment of every coin to the message's sender — the payee key derived for it, the instance's wallet launched (list, then one noSend createAction, no change) — kept under amm/withdrawals {n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey, beef} and answered with it (tx the Atomic BEEF); nothing is broadcast: the admin's wallet takes it in. The claim, {fn: \"claim\"} in the box amm/claim (any sender): the first writes amm/claim {claimant, since} and emits {event: \"claimed\", claimant: <hex>}, answered {fn: \"claim\", result: {claimant}}; a later one refused (claimed). Each answered to the sender in its box {fn, request, result | error}. The paid enable (0.15.3, a BEEF submission), POST /enable?tokenId=<txid>_<vout>&paymentTxid=&paymentVout=&derivationPrefix=&derivationSuffix= with ONE BEEF holding the token's deploy and the payment (filters kernel.brc104, kernel.beef, enable-check): enable-check refuses, in order, no price (403), no tokenId (400), a token on the list (409), no deploy in the BEEF (400), no payment named or not in it (402, satoshisRequired), under the price (402), the payment already in the wallet (409); the handler checks the output pays the BRC-29 key derived for the sender (else 400), sends the payment to the box amm/pay (from the instance itself: the wallet internalizes it, which sends it on), enables as the admin's enable does and keeps {paidBy, paymentTxid, satoshisPaid} on the row. Reads (anyone, nothing logged): /tokens, the enable list [{tokenId, topic, sym, dec, icon?, status: enabled|disabled, since}] newest first; /defaults, {terms?, market?, enablePriceSats}; /discovery, {on, since} (or {on: false}); /admin, {claimant, since} (or {} unclaimed); / the Swap pages (www/); a token's instance is <origin>/@<tokenId>."
 }

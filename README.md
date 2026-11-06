@@ -72,7 +72,7 @@ passes anything, so the host's key may send these too.
 | `terms {tokenId, terms}` (0.12.0; `terms` the three fees, 0.14.0 with an optional `minLegSats` (sats), or `null`) | nothing (the token instance's `amm/terms` is the record) | `token-terms {tokenId, terms}` | sends root's `terms` to the token's instance (`amm/validator`); not replayed at start |
 | `discovery {on}` | `{on, since}` under `amm/discovery` | `discovery-on` / `discovery-off` | starts / stops `discovery` |
 | `defaults {terms?, market?}` (0.14.0: `terms` may carry `minLegSats`) | `amm/defaults` | none | the next `token-enabled` events carry them |
-| `price {sats \| null}` (0.15.0; the price to enable a token, null: off) | `{sats}` under `amm/enable-price` (read: `enablePriceSats` on `/amm/defaults`) | `enable-price {sats}` | sets the price of swap's route `POST /amm/enable` (root's `dispatch`: the same row with `price`, or without one); replayed at start |
+| `price {sats \| null}` (0.15.0; the price to enable a token, null: off) | `{sats}` under `amm/enable-price` (read: `enablePriceSats` on `/amm/defaults`; `enable-check` reads it) | none (0.15.3) | nothing |
 | `withdraw` (0.15.2; no args) | a standard BRC-29 payment to the message's sender, built by swap's own program: the payee key derived for the admin (a fresh prefix and suffix, counterparty the admin), the instance's wallet launched — `list`, then ONE `createAction` with `noSend` of every spendable coin to that key, the total less the builder's fee (no change); kept under `amm/withdrawals` as `{n, txid, sats, at, outputIndex, derivationPrefix, derivationSuffix, senderIdentityKey}` and the Atomic BEEF, and answered with the same and `tx`. Nothing is broadcast here: the admin's wallet takes the payment in, which puts it on the network | none | nothing |
 | `claim` (box `amm/claim`, any sender; the first only) | `{claimant, since}` under `amm/claim` (read: `GET <swap>/amm/admin`) | `claimed {claimant}` | grants `amm.admin` on swap to the claimant (root's `grant`) |
 
@@ -119,36 +119,44 @@ Reads on swap (anyone):
 - `/amm/wallet/tx?n=<n>` (0.15.0): withdrawal n's Atomic BEEF (`application/octet-stream`; 404 when none)
 - `/`: the pages
 
-## The paid enable (0.15.0)
+## The paid enable (0.15.3: a BEEF submission)
 
-Any signed sender may enable a token for a fee, when the admin has set a price:
+Any signed sender may enable a token for a fee, when the admin has set a price (`enablePriceSats` on
+`/amm/defaults`). The request carries the payment in its body, beside the token's deploy, in ONE BEEF:
 
-    POST <origin>/amm/enable?tokenId=<txid>_<vout>
+    POST <origin>/amm/enable?tokenId=<txid>_<vout>&paymentTxid=<hex>&paymentVout=<n>&derivationPrefix=<base64>&derivationSuffix=<base64>
     Content-Type: application/octet-stream
-    body: the token's deploy, an Atomic BEEF
+    body: one BEEF holding the token's deploy transaction and the payment transaction, each with its ancestry
 
-The route's filters run in order before anything is recorded: `kernel.brc104` (signed, BRC-104),
-`kernel.beef` (the BEEF proven), the swap app's `enable-check`, then `kernel.pay` (ts-stack's payment wire).
-`enable-check` refuses before any payment:
+The payment is a standard BRC-29 payment to the exchange: output `paymentVout` of `paymentTxid` pays at least the
+price, P2PKH to the key derived with protocol `[2, "3241645161d8"]`, key id `"<prefix> <suffix>"`, counterparty
+the exchange's identity key (`GET /.well-known/skein`). The client builds and signs it and does NOT send it: the
+exchange's wallet takes it in, which is what sends it on.
+
+The route's filters run before anything is recorded: `kernel.brc104` (signed), `kernel.beef` (the BEEF proven),
+then the swap app's `enable-check`, which refuses in this order:
 
 | refusal | status | code |
 |---|---|---|
 | no price set (the paid enable is off) | 403 | `ERR_PAID_ENABLE_OFF` |
-| no `tokenId` in the query | 400 | `ERR_BAD_REQUEST` |
+| no `tokenId` | 400 | `ERR_BAD_REQUEST` |
 | the token is enabled already | 409 | `ERR_TOKEN_ENABLED` |
 | the token was disabled by the admin (only the admin enables it again) | 409 | `ERR_TOKEN_DISABLED` |
-| the body is not the token's deploy | 400 | `ERR_BAD_DEPLOY` |
+| the BEEF holds no deploy of that token | 400 | `ERR_BAD_DEPLOY` |
+| no payment named, or the named output is not in the BEEF | 402 | `ERR_PAYMENT_REQUIRED` (body `{code, satoshisRequired}`) |
+| the output holds less than the price | 402 | `ERR_PAYMENT_TOO_SMALL` (with `satoshisRequired`) |
+| the payment transaction is in the exchange's wallet already | 409 | `ERR_PAYMENT_REPLAYED` |
 
-Then `kernel.pay` answers 402 with `x-bsv-payment-satoshis-required: <price>` and a derivation prefix; the
-stock AuthFetch pays it (a BRC-29 payment to swap's key) and resends with `X-BSV-Payment`. The payment is
-internalized into swap's wallet before the handler runs. The handler enables the token as the admin's enable
-does (the row, the event `token-enabled` with the defaults) and keeps `{paidBy, paymentTxid, satoshisPaid}`
-on the row; it answers `{fn: "enable", result: <the row>}`. One fee, once; only the admin disables.
+The handler then checks the output pays the BRC-29 key derived for the signed sender (else 400
+`ERR_INVALID_PAYMENT`, nothing enabled), hands the payment to swap's wallet (`internalize`, a wallet payment; the
+request does not wait for it), enables the token as the admin's enable does (the default terms and market) and keeps
+`{paidBy, paymentTxid, satoshisPaid}` on the row; it answers `{fn: "enable", result: <the row>}`. One fee, once;
+only the admin disables. `@dcasegr/amm-client`'s `enableToken(tokenId, {deployBeef?})` does all of this.
 
 ## Requirements
 
 - **Node 24 or later**, on any platform node runs on. Nothing else: no toolchain.
-- **skein 0.2.9**, the npm dependency (`package.json`; 0.2.9: paid routes, `kernel.pay`; 0.2.8: the host keeps its liveness beats in host.db and reloads them at start, so `/amm/pools` lists pools again right after a restart). Its host is built to JavaScript, and its
+- **skein 0.2.9**, the npm dependency (`package.json`; 0.2.9: paid routes, `kernel.pay` (not used since 0.15.3); 0.2.8: the host keeps its liveness beats in host.db and reloads them at start, so `/amm/pools` lists pools again right after a restart). Its host is built to JavaScript, and its
   kernel is one wasm file the host loads: one machine per active instance on a worker thread,
   every instance a set of the host's one SQLite database (`SKEIN_STORE_SQLITE`, the default
   the first run writes). A host.env naming `SKEIN_STORE_ROCKSDB` runs skein's native kernel process

@@ -95,7 +95,7 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   walletHost = host.router;
   const pl = pools;
   ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log, ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
-  env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed, enable-price) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
+  env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
   for (const [h, rec] of early.splice(0)) ex.event(h, rec);
   void ex.updateSwap();
   void ex.reconcile();
