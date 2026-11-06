@@ -261,8 +261,9 @@ pub fn termsChange(a: Allocator, rows: []const Value, args: ?Value) !TermsChange
     return .{ .ok = .{ .token_id = id, .terms = t } };
 }
 
-/// The `/defaults` answer's JSON: `{terms?, market?}` (`{}` when none is set).
-pub fn defaultsJson(a: Allocator, rec: ?Value) ![]const u8 {
+/// The `/defaults` answer's JSON: `{terms?, market?, enablePriceSats}` (0.15.0: the price to enable a
+/// token, paid.zig's record; null when unset).
+pub fn defaultsJson(a: Allocator, rec: ?Value, enable_price: ?u64) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(a);
     var jw: std.json.Stringify = .{ .writer = &out.writer };
     try jw.beginObject();
@@ -270,6 +271,8 @@ pub fn defaultsJson(a: Allocator, rec: ?Value) ![]const u8 {
         try jw.objectField(k);
         try writeJson(&jw, v);
     };
+    try jw.objectField("enablePriceSats");
+    if (enable_price) |n| try jw.write(n) else try jw.write(null);
     try jw.endObject();
     return out.written();
 }

@@ -5,6 +5,7 @@ const w = @import("chain");
 const tokens = @import("src/tokens.zig");
 const discovery = @import("src/discovery.zig");
 const claim = @import("src/claim.zig");
+const paid = @import("src/paid.zig");
 const vec = @import("vectors");
 const dagjson = @import("dagjson");
 const scbor = @import("sdk_cbor");
@@ -81,9 +82,10 @@ test "the defaults: partial, null clears one, a bad shape refused" {
     const two = (try tokens.withDefaults(a, one, try dagjsonValue(a, "{\"terms\":{\"lpFeeBps\":30,\"validatorFeeBps\":5,\"commissionBps\":0}}"))).ok;
     try testing.expectEqual(@as(u64, 3), two.get("market").?.getUint("minCommissionBps").?);
     try testing.expectEqual(@as(u64, 30), two.get("terms").?.getUint("lpFeeBps").?);
-    const dj = try tokens.defaultsJson(a, two);
+    const dj = try tokens.defaultsJson(a, two, null);
     try testing.expect(std.mem.indexOf(u8, dj, "\"minCommissionBps\":3") != null and std.mem.indexOf(u8, dj, "\"lpFeeBps\":30") != null);
-    try testing.expectEqualStrings("{}", try tokens.defaultsJson(a, null));
+    try testing.expectEqualStrings("{\"enablePriceSats\":null}", try tokens.defaultsJson(a, null, null));
+    try testing.expectEqualStrings("{\"enablePriceSats\":2500}", try tokens.defaultsJson(a, null, 2500));
     const three = (try tokens.withDefaults(a, two, try dagjsonValue(a, "{\"market\":null}"))).ok;
     try testing.expect(three.get("market") == null and three.get("terms") != null);
     try testing.expect((try tokens.withDefaults(a, null, try dagjsonValue(a, "{\"terms\":{\"lpFeeBps\":30}}"))) == .bad);
@@ -196,7 +198,7 @@ test "minLegSats (0.14.0): optional in the defaults and a token's terms, carried
     const a = arena.allocator();
     const df = (try tokens.withDefaults(a, null, try dagjsonValue(a, "{\"terms\":{\"lpFeeBps\":30,\"validatorFeeBps\":5,\"commissionBps\":25,\"minLegSats\":10000}}"))).ok;
     try testing.expectEqual(@as(u64, 10000), df.get("terms").?.getUint("minLegSats").?);
-    try testing.expect(std.mem.indexOf(u8, try tokens.defaultsJson(a, df), "\"minLegSats\":10000") != null);
+    try testing.expect(std.mem.indexOf(u8, try tokens.defaultsJson(a, df, null), "\"minLegSats\":10000") != null);
     const ev = try tokens.enabledEvent(a, "aa_0", "BEEF", df);
     try testing.expectEqual(@as(u64, 10000), ev.get("terms").?.getUint("minLegSats").?);
     try testing.expect((try tokens.withDefaults(a, null, try dagjsonValue(a, "{\"terms\":{\"lpFeeBps\":30,\"validatorFeeBps\":5,\"commissionBps\":25,\"minLegSats\":\"x\"}}"))) == .bad);
@@ -227,7 +229,7 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    try testing.expectEqualStrings("0.14.0", scbor.Value.str(m.get("version")).?);
+    try testing.expectEqualStrings("0.15.0", scbor.Value.str(m.get("version")).?);
     // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
     // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
     // anything); claim is listed in no role.
@@ -263,12 +265,22 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/tokens")) seen |= 4;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/")) seen |= 16;
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/defaults")) seen |= 32;
+        // 0.15.0: the paid enable — enable-check sits before kernel.pay; the handler enablePaid.
+        if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/enable")) {
+            const fs = r.get("filters").?.array;
+            try testing.expectEqual(@as(usize, 4), fs.len);
+            for ([_][]const u8{ "kernel.brc104", "kernel.beef", "enable-check", "kernel.pay" }, fs) |want, f| try testing.expectEqualStrings(want, scbor.Value.str(f).?);
+            try testing.expectEqualStrings("config.enablePaid", scbor.Value.str(r.get("handler")).?);
+            try testing.expect(r.get("price") == null); // the host sets it, from the admin's price
+            seen |= 128;
+        }
         if (std.mem.eql(u8, t, "http") and std.mem.eql(u8, addr, "/discovery")) {
             try testing.expectEqualStrings("discovery", scbor.Value.str(r.get("filters").?.array[0]).?);
             seen |= 64;
         }
     }
-    try testing.expectEqual(@as(u8, 1 | 2 | 4 | 8 | 16 | 32 | 64), seen);
+    try testing.expectEqual(@as(u8, 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128), seen);
+    try testing.expectEqualStrings("config.enableCheck", scbor.Value.str(m.get("filters").?.get("enable-check")).?);
     try testing.expectEqualStrings("config.admin", scbor.Value.str(m.get("filters").?.get("admin")).?);
     try testing.expect(m.get("filters").?.get("requests") == null);
     try testing.expectEqualStrings("config.discovery", scbor.Value.str(m.get("filters").?.get("discovery")).?);
@@ -314,4 +326,70 @@ test "the claim: the first one recorded {claimant, since} and the event claimed 
     try testing.expectEqualStrings(claim.box, "amm/claim");
     // The answer to a claim is an answer (an own answer looped back runs nothing).
     try testing.expect(tokens.isAnswer(try tokens.answer(a, "claim", &w.store.hashCid(.tx, .{2} ** 32), try claim.result(a, &key))));
+}
+
+test "the paid enable (0.15.0): enable-check refuses an unpriced route, a token on the list (enabled, or disabled by the admin), a BEEF not its deploy; else passes; the row keeps the payment" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const raw = unhex(a, vec.token_deploy);
+    const txid = try displayHex(a, w.beef.txidOf(raw));
+    const beef = try atomic(a, raw);
+    const id = try std.fmt.allocPrint(a, "{s}_0", .{txid});
+    // The token id from the query, any id form.
+    try testing.expectEqualStrings(id, (try paid.queryTokenId(a, try std.fmt.allocPrint(a, "?tokenId={s}", .{id}))).?);
+    try testing.expectEqualStrings(id, (try paid.queryTokenId(a, try std.fmt.allocPrint(a, "?x=1&tokenId={s}.0", .{txid}))).?);
+    try testing.expect((try paid.queryTokenId(a, "?x=1")) == null);
+    // No price: off, whatever else.
+    const off = (try paid.check(a, 0, &.{}, id, beef)).refused;
+    try testing.expectEqual(@as(u16, 403), off.status);
+    try testing.expectEqualStrings("ERR_PAID_ENABLE_OFF", off.code);
+    // Priced, not on the list, its deploy: passes with the deploy.
+    const ok = (try paid.check(a, 1000, &.{}, id, beef)).ok;
+    try testing.expectEqualStrings(id, ok.token_id);
+    // No token id; no BEEF; another token's id.
+    try testing.expectEqual(@as(u16, 400), (try paid.check(a, 1000, &.{}, null, beef)).refused.status);
+    try testing.expectEqualStrings("ERR_BAD_DEPLOY", (try paid.check(a, 1000, &.{}, id, null)).refused.code);
+    try testing.expectEqualStrings("ERR_BAD_DEPLOY", (try paid.check(a, 1000, &.{}, try std.fmt.allocPrint(a, "{s}_0", .{"ab" ** 32}), beef)).refused.code);
+    // On the list: enabled → 409 enabled; disabled by the admin → 409 disabled (a blacklist for the paid route).
+    const row = try tokens.enabledRow(a, ok, 7, .{ .bytes = beef });
+    const on = (try paid.check(a, 1000, &.{row}, id, beef)).refused;
+    try testing.expectEqual(@as(u16, 409), on.status);
+    try testing.expectEqualStrings("ERR_TOKEN_ENABLED", on.code);
+    const dis = try tokens.updated(a, row, .disabled, &.{}, &.{});
+    try testing.expectEqualStrings("ERR_TOKEN_DISABLED", (try paid.check(a, 1000, &.{dis}, id, beef)).refused.code);
+    // The paid row: the enable's row and the payment; never the deploy in the read.
+    const payer = [_]u8{0x02} ++ [_]u8{0x11} ** 32;
+    const pr = try paid.paidRow(a, row, &payer, "cd" ** 32, 1000);
+    try testing.expectEqualStrings("enabled", pr.getText("status").?);
+    try testing.expectEqualStrings("02" ++ "11" ** 32, pr.getText("paidBy").?);
+    try testing.expectEqual(@as(u64, 1000), pr.getUint("satoshisPaid").?);
+    const js = try tokens.tokensJson(a, &.{pr});
+    try testing.expect(std.mem.indexOf(u8, js, "\"paymentTxid\"") != null and std.mem.indexOf(u8, js, "\"deploy\"") == null);
+}
+
+test "price and withdraw (0.15.0): price {sats | null} → the record and enable-price; withdraw {lockingScript} → the event; bad args refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqual(@as(?u64, 2500), (paid.priceArg(try dagjsonValue(a, "{\"sats\":2500}"))).ok);
+    try testing.expectEqual(@as(?u64, null), (paid.priceArg(try dagjsonValue(a, "{\"sats\":null}"))).ok);
+    try testing.expect(paid.priceArg(try dagjsonValue(a, "{\"sats\":0}")) == .bad);
+    try testing.expect(paid.priceArg(try dagjsonValue(a, "{\"sats\":\"5\"}")) == .bad);
+    try testing.expect(paid.priceArg(try dagjsonValue(a, "{}")) == .bad);
+    try testing.expectEqual(@as(?u64, 2500), paid.priceOf(try paid.priceRecord(a, 2500)));
+    try testing.expectEqual(@as(?u64, null), paid.priceOf(try paid.priceRecord(a, null)));
+    try testing.expectEqual(@as(?u64, null), paid.priceOf(null));
+    const ev = try paid.priceEvent(a, 2500);
+    try testing.expectEqualStrings("enable-price", ev.getText("event").?);
+    try testing.expectEqual(@as(u64, 2500), ev.getUint("sats").?);
+    try testing.expect((try paid.priceEvent(a, null)).get("sats").? == .null);
+    const ws = (try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"76A914\"}"))).ok;
+    try testing.expectEqualStrings("76a914", ws);
+    try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"7\"}"))) == .bad);
+    try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{\"lockingScript\":\"zz\"}"))) == .bad);
+    try testing.expect((try paid.withdrawArg(a, try dagjsonValue(a, "{}"))) == .bad);
+    const we = try paid.withdrawEvent(a, ws);
+    try testing.expectEqualStrings("withdraw", we.getText("event").?);
+    try testing.expectEqualStrings("76a914", we.getText("lockingScript").?);
 }

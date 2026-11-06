@@ -25,6 +25,11 @@
 //!     {fn: "defaults", args: {terms?, market?}}   the head `amm/defaults` (tokens.zig `withDefaults`).
 //!     {fn: "discovery", args: {on}}   the head `amm/discovery` `{on, since}` and the event
 //!                       `discovery-on` / `discovery-off` (discovery.zig).
+//!     {fn: "price", args: {sats | null}}   (0.15.0) the price to enable a token: the head
+//!                       `amm/enable-price` and the event `{event: "enable-price", sats}` (the host, as
+//!                       owner, sets the `/enable` route's `price`; null: off) (paid.zig).
+//!     {fn: "withdraw", args: {lockingScript}}   (0.15.0) the event `{event: "withdraw", lockingScript}`
+//!                       (hex): the host, as owner, spends swap's wallet to it (paid.zig).
 //!   box `amm/claim` (kernel.beef; its function `claim` gated by no role: any sender; claim.zig):
 //!     {fn: "claim"}   the first: the head `amm/claim` `{claimant: <the sender>, since}` and the
 //!                       event `{event: "claimed", claimant: <hex>}` (the host grants it amm.admin);
@@ -37,16 +42,23 @@
 //! **Called** (read routes; their filters: anyone, nothing logged):
 //!
 //!   tokens    `/tokens`: the enable list, newest first (tokens.zig `tokensJson`)
-//!   defaults  `/defaults`: the defaults, `{terms?, market?}` (tokens.zig `defaultsJson`)
+//!   defaults  `/defaults`: the defaults, `{terms?, market?, enablePriceSats}` (tokens.zig `defaultsJson`)
 //!   discovery `/discovery`: `{on, since}`, or `{on: false}` (discovery.zig `json`)
 //!   admin     `/admin`: `{claimant, since}`, or `{}` unclaimed (claim.zig `json`)
 //!   serve     `/` (prefix): the Swap pages, www/ of the app's own tree (skein-sdk `files.serve`)
+//!
+//! **The paid enable** (0.15.0; paid.zig): `POST /enable?tokenId=<txid>_<vout>`, the body the deploy's
+//! Atomic BEEF; filters kernel.brc104, kernel.beef, then this app's `enable-check` (fn `enableCheck`:
+//! refuses an unpriced route, a token on the list, a BEEF that is not the token's deploy — before
+//! kernel.pay asks for money), then kernel.pay; the handler `enablePaid` does what the admin's enable
+//! does and keeps `{paidBy, paymentTxid, satoshisPaid}` on the row.
 const std = @import("std");
 const w = @import("chain");
 const vm = @import("overlay_sk");
 const tokens = @import("tokens.zig");
 const discovery = @import("discovery.zig");
 const claim = @import("claim.zig");
+const paid = @import("paid.zig");
 const app = @import("app");
 const files = @import("files");
 const scbor = @import("sdk_cbor");
@@ -99,16 +111,63 @@ fn call(a: Allocator, in: Value) !void {
     const ans: Value = if (eql(u8, func, "tokens"))
         try httpJson(a, 200, try tokens.tokensJson(a, tokens.rowsOf(try headRecord(a, tokens.tokens_head))))
     else if (eql(u8, func, "defaults"))
-        try httpJson(a, 200, try tokens.defaultsJson(a, try headRecord(a, tokens.defaults_head)))
+        try httpJson(a, 200, try tokens.defaultsJson(a, try headRecord(a, tokens.defaults_head), paid.priceOf(try headRecord(a, paid.price_head))))
     else if (eql(u8, func, "discovery"))
         try httpJson(a, 200, try discovery.json(a, try headRecord(a, discovery.head)))
     else if (eql(u8, func, "admin"))
         try httpJson(a, 200, try claim.json(a, try headRecord(a, claim.head)))
     else if (eql(u8, func, "serve"))
         try servePages(a, arg)
+    else if (eql(u8, func, "enableCheck"))
+        return vm.answer(a, try enableCheck(a, arg))
+    else if (eql(u8, func, "enablePaid"))
+        return vm.answer(a, try enablePaid(a, in, arg))
     else
         return error.UnknownFunction;
     return vm.answer(a, if (isFilter(in)) try asFilterAnswer(a, ans) else ans);
+}
+
+/// The request body's BEEF as the door handed it (its envelope: the wire bytes back), or null: no BEEF.
+fn bodyWire(a: Allocator, arg: Value) ?[]const u8 {
+    const env = arg.get("body") orelse return null;
+    if (env != .map) return null;
+    return w.record.wireOf(a, vm.store(), env) catch null;
+}
+
+/// The filter `enable-check` (0.15.0): before kernel.pay, the paid enable's refusals (paid.zig `check`).
+fn enableCheck(a: Allocator, arg: Value) !Value {
+    const price: u64 = if (arg.get("match")) |m| m.getUint("price") orelse 0 else 0;
+    const id = try paid.queryTokenId(a, arg.getText("query") orelse "");
+    return switch (try paid.check(a, price, tokens.rowsOf(try headRecord(a, tokens.tokens_head)), id, bodyWire(a, arg))) {
+        .refused => |r| try paid.rejectAnswer(a, r),
+        .ok => try paid.passAnswer(a),
+    };
+}
+
+/// The handler `enablePaid` (0.15.0): the admin's enable — the row, the event token-enabled with the
+/// defaults — and the payment on the row; answered `{fn: "enable", result: <the row>}`.
+fn enablePaid(a: Allocator, in: Value, arg: Value) !Value {
+    const id = (try paid.queryTokenId(a, arg.getText("query") orelse "")) orelse return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_BAD_REQUEST\",\"description\":\"want ?tokenId=<txid>_<vout>\"}");
+    const pay = arg.get("payment") orelse return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_PAYMENT_REQUIRED\",\"description\":\"no payment\"}");
+    const wire = bodyWire(a, arg) orelse return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_BAD_DEPLOY\",\"description\":\"want the body: the deploy's Atomic BEEF\"}");
+    const d = switch (try tokens.deployOf(a, id, wire)) {
+        .refused => |why| return httpJson(a, 400, try std.fmt.allocPrint(a, "{{\"status\":\"error\",\"code\":\"ERR_BAD_DEPLOY\",\"description\":{f}}}", .{std.json.fmt(why, .{})})),
+        .ok => |x| x,
+    };
+    const by = pay.getBytes("sender") orelse arg.getBytes("caller") orelse "";
+    if (by.len != 33) return httpJson(a, 400, "{\"status\":\"error\",\"code\":\"ERR_PAYMENT_REQUIRED\",\"description\":\"the payment names no sender\"}");
+    const row = try paid.paidRow(a, try tokens.enabledRow(a, d, now(in), arg.get("body").?), by, pay.getText("txid") orelse "", pay.getUint("satoshisPaid") orelse 0);
+    try saveRow(a, row);
+    _ = try vm.emitEvent(a, try tokens.enabledEvent(a, d.token_id, wire, try headRecord(a, tokens.defaults_head)));
+    var out: std.Io.Writer.Allocating = .init(a);
+    var jw: std.json.Stringify = .{ .writer = &out.writer };
+    try jw.beginObject();
+    try jw.objectField("fn");
+    try jw.write("enable");
+    try jw.objectField("result");
+    try tokens.writeJson(&jw, try tokens.shown(a, row));
+    try jw.endObject();
+    return httpJson(a, 200, out.written());
 }
 
 fn toSdk(a: Allocator, v: Value) !scbor.Value {
@@ -159,7 +218,9 @@ fn step(a: Allocator, in: Value) !void {
     if (eql(u8, func, "terms")) return termsSet(a, args, body);
     if (eql(u8, func, "defaults")) return defaults(a, args, body);
     if (eql(u8, func, "discovery")) return discoverySet(a, in, args, body);
-    return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable, terms, defaults and discovery"));
+    if (eql(u8, func, "price")) return priceSet(a, args, body);
+    if (eql(u8, func, "withdraw")) return withdraw(a, args, body);
+    return answerRoot(a, args, func, try tokens.refusal(a, func, args.getCid("message"), "unknown-fn", "amm/admin takes enable, disable, terms, defaults, discovery, price and withdraw"));
 }
 
 /// Answer the message's sender in the box it wrote to; the thread ends.
@@ -256,6 +317,31 @@ fn discoverySet(a: Allocator, in: Value, args: Value, body: Value) !void {
     try vm.advance(discovery.head, try vm.store().putValue(a, rec));
     _ = try vm.emitEvent(a, try discovery.event(a, on));
     return answerRoot(a, args, "discovery", try tokens.answer(a, "discovery", message, rec));
+}
+
+/// `price {sats | null}` (0.15.0): the record and the event enable-price.
+fn priceSet(a: Allocator, args: Value, body: Value) !void {
+    const message = args.getCid("message");
+    const sats = switch (paid.priceArg(body.get("args"))) {
+        .bad => |why| return answerRoot(a, args, "price", try tokens.refusal(a, "price", message, "bad-args", why)),
+        .ok => |n| n,
+    };
+    const rec = try paid.priceRecord(a, sats);
+    try vm.advance(paid.price_head, try vm.store().putValue(a, rec));
+    _ = try vm.emitEvent(a, try paid.priceEvent(a, sats));
+    return answerRoot(a, args, "price", try tokens.answer(a, "price", message, rec));
+}
+
+/// `withdraw {lockingScript}` (0.15.0): the event withdraw only.
+fn withdraw(a: Allocator, args: Value, body: Value) !void {
+    const message = args.getCid("message");
+    const script = switch (try paid.withdrawArg(a, body.get("args"))) {
+        .bad => |why| return answerRoot(a, args, "withdraw", try tokens.refusal(a, "withdraw", message, "bad-args", why)),
+        .ok => |s| s,
+    };
+    const ev = try paid.withdrawEvent(a, script);
+    _ = try vm.emitEvent(a, ev);
+    return answerRoot(a, args, "withdraw", try tokens.answer(a, "withdraw", message, ev));
 }
 
 /// `claim` (box amm/claim, any sender): the first claim recorded and emitted; a later one refused.
