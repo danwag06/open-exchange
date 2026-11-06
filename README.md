@@ -35,7 +35,8 @@ The read API's routes, plain GETs, and the pool event feeds (0.14.0: every pool 
 | `/@<token>/amm/stats` | the host's: `price` = the planner's `priceOf` over the pools `/@<token>/amm/pools` lists (the midpoint of what a buy and a sell of 1% of the pooled sats would pay now), `buyPrice`, `sellPrice`; `change1h` / `change24h` from the same price over the pools listed then (`/pools/at`); `lastTradePrice`, 24 h volume and counts, last trade; TVL and pools over the listed pools |
 | `/@<token>/amm/color/<token>/holders` (`?limit&skip`) | the holder count and the balances, largest first |
 | `/@<token>/amm/pools/beef?pool=`, `/positions?pool=` | by pool id (0.14.0) |
-| `/@<token>/amm/fees/validator`, `/fees/commission`, `/terms` (the validator's `minLegSats`), `/spends`, `/tx`, `/swaps`, `/token` | as before (0.11.0) |
+| `/@<token>/amm/fees/validator`, `/fees/commission`, `/terms` (the validator's `minLegSats`), `/spends`, `/tx`, `/token` | as before (0.11.0; 0.17.0: no swap records, so no swap read) |
+| `POST /@<token>/amm/swap` (0.17.0) | the swap relay, the HOST's: body `{funding, swap, pool, validator, peerId}` (DAG-JSON bytes) → the validator's reply as it is (`{ok: true, tx, txid, beef?}` / `{ok: false, reason, detail?, pool?, beef?}`), or `{ok: false, reason: "commission_missing"}` (the one rule the host checks: the commission pays this exchange's key) or `{ok: false, reason: "unreachable", detail}` (any break in the call); plain; nothing recorded; the request's close stops the host (host/relay.ts) |
 | `/amm/tokens`, `/@discovery/1color/tokens` (rows with `amount` and `height`), `/<token>`, `/<token>/icon`, `/<token>/deploy` | as before |
 | `/@discovery/1color/tokens?q=<text>&after=<tokenId>&limit=` (0.15.1) | search: the tokens whose `sym` starts with `q` (ASCII case-insensitive) or whose `tokenId` starts with it, the same rows and order; `after` = the rows strictly after that token (the last row's id; the answer stays the plain array); an unknown `after`, `after` beside `skip`, `q`/`after` beside `ids` → 400; tokens deployed before 0.15.1 are found by id only until their deploy is admitted again |
 
@@ -257,9 +258,13 @@ these steps:
 3. run
 4. enable: the instance is born, its deploy admitted, its names served, its beats seen, and
    bare-host `/lookup` is routed to it
-5. (0.16.0) one swap in flight per pool, on hosts of their own: two, then three, swaps on one pool
-   output relayed at once through the host's own relay → one accepted, the others `pool_spent` with
-   its continuation; the pools route at the new outpoint, its trade row
+5. (0.17.0) the host is the relay, on hosts of their own: a swap whose commission pays another key
+   refused with nothing in the token's log; two, then three, swaps on one pool output relayed at once
+   through the host's relay (the validator on its node) → one accepted, the others `pool_spent` with
+   its continuation, the pools route at the new outpoint, its trade row; then the same race through
+   ANOTHER host's relay (its own key, bootstrapped to the validator) → one accepted, the other
+   `pool_spent`, the relaying host's overlay holding the accepted swap when it answers; the
+   validator's host stopped → `unreachable` at once
 6. disable, then enable again; one token's terms (40/6/3, then null, an unknown token refused)
 7. discovery off, then on
 8. a restart, with reconcile

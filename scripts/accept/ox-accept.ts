@@ -37,9 +37,12 @@
 //                          (price over the listed pools); the host's /amm/stats, /amm/positions?pool=, /amm/spends;
 //                          B's holders; then B's other lineage on a SECOND host (the fixtures' swap_token_change
 //                          competes with swap_tokens_in): deploy → sats-in swap → a swap WITH token change → its close
-//   one swap per pool    → (0.16.0) on hosts of their own: two, then three, swaps on one pool output relayed at once
-//                          through the host's own relay before either is admitted → exactly one accepted, the others
-//                          pool_spent with its continuation; the pools route at the new outpoint, its trade row
+//   the host's relay     → (0.17.0) on hosts of their own (host/relay.ts, what POST /@<B>/amm/swap runs): a commission
+//                          paying another key refused, B's log unchanged; two, then three, swaps on one pool output at
+//                          once through the host's relay (the validator on its node) → one accepted, the others
+//                          pool_spent with its continuation, the pools route at the new outpoint, its trade row; the
+//                          CROSS-HOST race (a relaying host of another key) → the same, the relaying host's overlay
+//                          holding the accepted swap when it answers; the validator's host stopped → unreachable at once
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -662,14 +665,18 @@ try {
     }
   }
 
-  // ------------------------------------------------ one swap in flight per pool (0.16.0; skein-amm 0.43.0, D3): B on hosts of their own
-  // Two, then three, swaps on ONE pool output, relayed at once through this host's own relay (`/call`
-  // amm.swap.submit, the validator this node: in-VM) before either is admitted: the validator signs one; the others
-  // wait for it to settle and are answered pool_spent with the new state; the pools route lists the new outpoint, the
-  // trade row exists. The swaps are built from the fixtures (swap_bsv_in's outputs and call), each funded by its own
-  // output of one funding transaction (fund:1, the fixtures' taker key(0x1e)) and its preimage computed here. Each
-  // race on a host of its own (the fixtures give one pool output to race on).
-  const raceHost = async (n: number) => {
+  // ------------------------------------------------ the host is the relay (0.17.0; skein-amm 0.44.0): one swap in flight per pool
+  // Two, then three, swaps on ONE pool output, relayed at once through the HOST's relay (host/relay.ts `Relay.swap`,
+  // what POST /@<B>/amm/swap runs; the validator this node: its inbound frame) before either is admitted: the validator
+  // signs one; the others wait for it to settle and are answered pool_spent with the new state; the pools route lists
+  // the new outpoint, the trade row exists. A swap whose commission pays another key: refused by the host, NOTHING in
+  // B's log. Then (cross) the same race through ANOTHER host's relay (a host of its own key, bootstrapped to the
+  // validator's node): one accepted, the other pool_spent, the relaying host's overlay holds the accepted swap (its
+  // trade row) when the answer comes; the validator's host stopped → the next call `unreachable` at once. The swaps
+  // are built from the fixtures (swap_bsv_in's outputs and call, the commission rewritten to the relaying exchange's
+  // pkh), each funded by its own output of one funding transaction (fund:1, the fixtures' taker key(0x1e)), its
+  // preimage computed here. Each race on hosts of its own (the fixtures give one pool output to race on).
+  const raceHost = async (n: number, cross = false) => {
     const home3 = mkdtempSync(join(tmpdir(), `ox-accept-race${n}-`));
     writeFileSync(join(home3, "key"), `${shared.toHex()}\n`, { mode: 0o600 });
     const port3 = await freePort(), hostPort3 = await freePort(), p2pPort3 = await freePort();
@@ -684,6 +691,7 @@ try {
     const R3 = `http://127.0.0.1:${port3}`;
     const get3 = async (path: string) => { const r = await fetch(`${R3}${path}`); return r.status === 200 ? await r.json() as unknown : undefined; };
     let z: Running | undefined;
+    let xh: { run: Running; home: string; R: string; com: string } | undefined;
     try {
       const fr3 = await firstRun(sk, env3);
       check(!fr3.failed, `race host (${n}): the first run (${fr3.made.join("; ")})`);
@@ -711,7 +719,11 @@ try {
       const baseChunks0 = UnlockingScript.fromBinary(base.inputs[0]!.unlockingScript!.toBinary()).chunks;
       const fxCom = Buffer.from(baseChunks0[6]!.data!).toString("hex");
       const ourCom = listed?.market?.commissionPkh ?? "";
-      const outs = base.outputs.slice(0, 5).map((o, i) => i === 4 ? { satoshis: o.satoshis, lockingScript: LockingScript.fromHex(o.lockingScript.toHex().replace(fxCom, ourCom)) } : o);
+      // cross: the relaying host (another key) takes the commission at ITS key: started now, bootstrapped to this node.
+      if (cross) xh = await relayHost(z, peerId, `/ip4/127.0.0.1/tcp/${p2pPort3}/p2p/${peerId}`);
+      const relayCom = cross ? xh!.com : ourCom;
+      const outsFor = (com: string) => base.outputs.slice(0, 5).map((o, i) => i === 4 ? { satoshis: o.satoshis, lockingScript: LockingScript.fromHex(o.lockingScript.toHex().replace(fxCom, com)) } : o);
+      const outs = outsFor(relayCom);
       check(base.outputs[4]!.lockingScript.toHex().includes(fxCom), "the fixture swap's output 4 is the commission to its commissionPkh");
       const poolSats = pd.outputs[0]!.satoshis!;
       const exact = outs.reduce((k, o) => k + o.satoshis!, 0) - poolSats + 500;
@@ -728,10 +740,11 @@ try {
       const lockPart = ps.slice(off + 1);
       check(ps[off] === 0x6d && lockPart[0] === 0x61 && lockPart[1] === 0xab, "the pool output: value prefix, OP_2DROP, then OP_NOP OP_CODESEPARATOR");
       const scriptCode = (sdk as unknown as { Script: { fromBinary: (b: number[]) => unknown } }).Script.fromBinary(lockPart.slice(2));
-      const baseChunks = baseChunks0.map((c, i) => (i === 6 ? { op: 20, data: Array.from(Buffer.from(ourCom, "hex")) } : c));
+      const chunksFor = (com: string) => baseChunks0.map((c, i) => (i === 6 ? { op: 20, data: Array.from(Buffer.from(com, "hex")) } : c));
       const TS = (sdk as unknown as { TransactionSignature: { formatBip143: (p: Record<string, unknown>) => Uint8Array } }).TransactionSignature;
       /** The k-th swap on pool_deploy:0: swap_bsv_in's call and outputs, funded by the funding's output k, the validator's slot empty. */
-      const swapOn = async (k: number) => {
+      const swapOn = async (k: number, com = relayCom) => {
+        const outs = outsFor(com), baseChunks = chunksFor(com);
         const t = new Transaction();
         t.version = base.version;
         t.lockTime = base.lockTime;
@@ -744,46 +757,106 @@ try {
         await t.sign();
         return t;
       };
-      // A session with B's instance (the handshake under /@<B>/, as the pages make it: RawBox's).
-      const rb = new RawBox(keyWallet(admin), `${R3}/@${B}`);
-      await rb.ready();
-      const taf = (rb as unknown as { af: { fetch: (u: string, i: RequestInit) => Promise<Response> } }).af;
       const b64 = (b: number[] | Uint8Array) => ({ "/": { bytes: Buffer.from(b).toString("base64").replace(/=+$/, "") } });
-      type Rec = { status?: string; reason?: string; txid?: string; poolState?: { outpoint?: string } };
-      const relay = async (t: InstanceType<typeof Transaction>, pool: string): Promise<Rec | { error: string }> => {
-        const res = await taf.fetch(`${R3}/@${B}/amm/call`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fn: "amm.swap.submit", args: { funding: b64(ft.toAtomicBEEF()), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId, expires: Date.now() + 90_000 } }) });
-        const j = await res.json().catch(() => ({})) as { result?: Rec; error?: { code?: string; message?: string } };
-        return j.result ?? { error: `${res.status} ${JSON.stringify(j.error ?? j).slice(0, 200)}` };
+      type Rec = { ok?: boolean; reason?: string; detail?: string; txid?: string; pool?: { outpoint?: string }; beef?: unknown };
+      /** One leg through a host's relay (host/relay.ts, what POST /@<B>/amm/swap runs): {status, answer}. */
+      const relayVia = async (r: Running, t: InstanceType<typeof Transaction>, pool: string): Promise<Rec & { status?: number }> => {
+        const body = new TextEncoder().encode(JSON.stringify({ funding: b64(ft.toAtomicBEEF()), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId }));
+        const res = await r.relay.swap(B, body);
+        return { status: res.status, ...(JSON.parse(new TextDecoder().decode(res.body)) as Rec) };
       };
+      const via = cross ? xh!.run : z;
+      const relay = (t: InstanceType<typeof Transaction>, pool: string) => relayVia(via, t, pool);
+      const tipOf = async (r: Running) => String(await (await r.host.router.hydrate(B)).kernel.tip());
+      const nextOf = (g: Rec) => (g.pool as { outpoint?: string } | undefined)?.outpoint;
+
+      // The host's one rule: a swap whose commission pays another key is refused, nothing relayed, nothing in B's log.
+      {
+        const t0 = await tipOf(via);
+        const bad = await relay(await swapOn(4, fxCom), `${pd.id("hex")}_0`);
+        await sleep(300);
+        check(bad.status === 200 && bad.ok === false && bad.reason === "commission_missing" && (await tipOf(via)) === t0,
+          `${cross ? "cross host: " : ""}a swap whose commission pays ${fxCom.slice(0, 8)}…, not this exchange's ${relayCom.slice(0, 8)}…: refused by the host (${bad.reason}: ${String(bad.detail).slice(0, 80)}); B's log unchanged (no entry)`);
+      }
       /** `n` swaps on `pool`, relayed at once: exactly one accepted, the rest pool_spent with its continuation. */
       const race = async (n: number, from: number, pool: string) => {
         const txs = await Promise.all(Array.from({ length: n }, (_, i) => swapOn(from + i)));
         const got = await Promise.all(txs.map((t) => relay(t, pool)));
-        const won = got.filter((g) => (g as Rec).status === "accepted") as Rec[];
-        const lost = got.filter((g) => (g as Rec).status !== "accepted") as Rec[];
+        const won = got.filter((g) => g.ok === true);
+        const lost = got.filter((g) => g.ok !== true);
         const next = won[0]?.txid ? `${won[0].txid}_0` : "";
-        check(won.length === 1 && lost.length === n - 1 && lost.every((g) => g.status === "refused" && g.reason === "pool_spent" && g.poolState?.outpoint === next),
-          `${n} swaps on one pool output, relayed at once: one accepted (${String(won[0]?.txid).slice(0, 8)}…), ${n - 1} refused pool_spent with its continuation (${JSON.stringify(got.map((g) => (g as Rec).status ?? (g as { error: string }).error)).slice(0, 300)}; ${lost.map((g) => `${g.reason} ${String(g.poolState?.outpoint).slice(0, 8)}`).join(", ")})`);
-        const moved = await until("the pools route at the new outpoint", async () => ((await get3(`/@${B}/amm/pools`)) as PoolsB | undefined)?.pools?.find((q) => q.poolId === poolB && q.outpoint === next), 30_000);
-        const row = won[0]?.txid ? await get3(`/@${B}/amm/trades?txid=${won[0].txid}`) as Record<string, unknown> | undefined : undefined;
-        check(!!moved && row?.poolId === poolB, `…/@<B>/amm/pools lists the pool at the accepted swap's continuation; its trade row (${JSON.stringify(row)?.slice(0, 120)})`);
+        check(won.length === 1 && lost.length === n - 1 && lost.every((g) => g.reason === "pool_spent" && nextOf(g) === next),
+          `${cross ? "cross host: " : ""}${n} swaps on one pool output, relayed at once through ${cross ? "another host's" : "the host's"} relay: one accepted (${String(won[0]?.txid).slice(0, 8)}…), ${n - 1} refused pool_spent with its continuation (${JSON.stringify(got.map((g) => g.ok ? "accepted" : `${g.reason}${g.detail ? `: ${g.detail}` : ""}`)).slice(0, 300)})`);
+        if (cross) {
+          // D3: the relaying host's overlay took the validator's BEEF in before it answered: its trade row is there now.
+          const row = won[0]?.txid ? await (await fetch(`${xh!.R}/@${B}/amm/trades?txid=${won[0].txid}`)).json().catch(() => undefined) as Record<string, unknown> | undefined : undefined;
+          check(row?.poolId === poolB && won[0]?.beef !== undefined, `cross host: the relaying host's overlay holds the accepted swap when the answer comes (its trade row: ${JSON.stringify(row)?.slice(0, 100)})`);
+        } else {
+          const moved = await until("the pools route at the new outpoint", async () => ((await get3(`/@${B}/amm/pools`)) as PoolsB | undefined)?.pools?.find((q) => q.poolId === poolB && q.outpoint === next), 30_000);
+          const row = won[0]?.txid ? await get3(`/@${B}/amm/trades?txid=${won[0].txid}`) as Record<string, unknown> | undefined : undefined;
+          check(!!moved && row?.poolId === poolB, `…/@<B>/amm/pools lists the pool at the accepted swap's continuation; its trade row (${JSON.stringify(row)?.slice(0, 120)})`);
+        }
         return won[0]?.txid;
       };
       // n on the deployed pool output.
       const w1 = await race(n, 0, `${pd.id("hex")}_0`);
       // Two more on the same output afterwards: the pool is spent and nothing in flight — pool_spent at once, none signed.
-      if (w1 && n === 2) {
-        const late = await Promise.all([3, 4].map(async (k) => relay(await swapOn(k), `${pd.id("hex")}_0`)));
-        check(late.every((g) => (g as Rec).status === "refused" && (g as Rec).reason === "pool_spent" && (g as Rec).poolState?.outpoint === `${w1}_0`), `…two more on the spent output afterwards: refused pool_spent with the new state, none signed (${late.map((g) => (g as Rec).reason ?? (g as { error: string }).error).join(", ")})`);
+      if (w1 && n === 2 && !cross) {
+        const late = await Promise.all([2, 3].map(async (k) => relay(await swapOn(k), `${pd.id("hex")}_0`)));
+        check(late.every((g) => g.ok === false && g.reason === "pool_spent" && nextOf(g) === `${w1}_0`), `…two more on the spent output afterwards: refused pool_spent with the new state, none signed (${late.map((g) => g.reason).join(", ")})`);
+      }
+      if (cross) {
+        // The validator's host stopped: the next call from the relaying host fails at once, named.
+        await z.stop().catch(() => {});
+        z = undefined;
+        const t0 = Date.now();
+        const gone = await relay(await swapOn(3), `${pd.id("hex")}_0`);
+        const ms = Date.now() - t0;
+        check(gone.status === 200 && gone.ok === false && gone.reason === "unreachable" && ms < 10_000, `cross host: the validator's host stopped → unreachable at once (${ms} ms: ${String(gone.detail).slice(0, 120)})`);
       }
     } finally {
       await z?.stop().catch(() => {});
+      await xh?.run.stop().catch(() => {});
       if (ROCKS) await sleep(1500);
-      if (!process.env.KEEP) rmSync(home3, { recursive: true, force: true });
+      if (!process.env.KEEP) { rmSync(home3, { recursive: true, force: true }); if (xh) rmSync(xh.home, { recursive: true, force: true }); }
     }
+  };
+  /**
+   * A relaying host of its own key (cross): bootstrapped to the validator's node, B enabled there (market only: no
+   * terms), the pool's deploy in its overlay (so it holds the lineage the validator's BEEF continues).
+   */
+  const relayHost = async (_v: Running, _peer: string, bootstrap: string): Promise<{ run: Running; home: string; R: string; com: string }> => {
+    const home4 = mkdtempSync(join(tmpdir(), "ox-accept-relay-"));
+    writeFileSync(join(home4, "key"), `${"6e".repeat(32)}\n`, { mode: 0o600 });
+    const port4 = await freePort(), hostPort4 = await freePort(), p2pPort4 = await freePort();
+    writeFileSync(join(home4, "host.env"), [
+      `SKEIN_KEY_FILE=${join(home4, "key")}`,
+      ...(ROCKS ? [`SKEIN_STORE_ROCKSDB=${join(home4, "store-rocksdb")}`] : FILE ? [] : [`SKEIN_STORE_SQLITE=${join(home4, "store.sqlite")}`]),
+      `SKEIN_ROOT_INSTANCE=${SWAP}`, "SKEIN_NETWORK=regtest", `SKEIN_ROUTER_PORT=${port4}`, `SKEIN_HOST_PORT=${hostPort4}`, `SKEIN_HEADERS_URL=${feedUrl}`,
+      `SKEIN_ARC_URL=${arcade.url}`, "SKEIN_ARC_TOKEN=t", `SKEIN_ARC_EVENTS_URL=${arcade.eventsUrl}`, `SKEIN_LIBP2P_LISTEN=/ip4/127.0.0.1/tcp/${p2pPort4}`,
+      `SKEIN_LIBP2P_BOOTSTRAP=${bootstrap}`,
+      ...(kernel ? [`SKEIN_KERNEL_BIN=${kernel}`] : []), "",
+    ].join("\n"));
+    const env4: Env = { vars: { HOME: process.env.HOME, PATH: process.env.PATH, SKEIN_HOME: home4 }, out: (l) => { if (process.env.VERBOSE) process.stdout.write(`  4| ${l}\n`); }, err: (l) => { process.stdout.write(`  4! ${l}\n`); } };
+    const R4 = `http://127.0.0.1:${port4}`;
+    const fr4 = await firstRun(sk, env4);
+    check(!fr4.failed, `relaying host: the first run (${fr4.made.join("; ")})`);
+    if (ROCKS) await sleep(1500);
+    const w = await startExchange(sk, settings(sk, env4));
+    await w.exchange.idle();
+    await until("the relaying host's chain at the fixtures' roots", async () => { const t = await (await w.host.router.hydrate(SWAP)).kernel.chainTip(); return t && t.height >= topH ? t : undefined; });
+    await w.exchange.rootMessage(SWAP, "amm/admin", { fn: "enable", args: { tokenId: B, beef: Uint8Array.from(ftx.get("token_deploy")!.toAtomicBEEF()) } });
+    check(!!(await until("/@B/amm/token on the relaying host", async () => (await fetch(`${R4}/@${B}/amm/token`)).status === 200 ? true : undefined, 60_000)), "relaying host: B enabled by root (market only)");
+    await w.exchange.idle();
+    const st = (await fetch(`${R4}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([tmB]) }, body: Uint8Array.from(ftx.get("pool_deploy")!.toBEEF()) })).status;
+    const terms = await (await fetch(`${R4}/@${B}/amm/terms`)).json() as { market?: { commissionPkh?: string } };
+    const com = terms.market?.commissionPkh ?? "";
+    check(st === 200 && /^[0-9a-f]{40}$/.test(com) && w.host.router.p2p?.peerId(B) !== _peer, `relaying host: the pool's deploy in its overlay (${st}); its own commission key ${com.slice(0, 8)}…; its own node`);
+    return { run: w, home: home4, R: R4, com };
   };
   await raceHost(2);
   await raceHost(3);
+  await raceHost(2, true);
 
   // ------------------------------------------------ disable, enable again
   await send({ fn: "disable", args: { tokenId: A } });

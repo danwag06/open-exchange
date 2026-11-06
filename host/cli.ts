@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Exchange, DISCOVERY, DISCOVERY_TOPICS, SWAP } from "./exchange.ts";
+import { Relay } from "./relay.ts";
 import { Pools } from "./pools.ts";
 import { walletRead } from "./wallet.ts";
 import { IMAGES_DIR, load, skeinVersion, type Router, type Skein } from "./skein.ts";
@@ -62,7 +63,7 @@ export async function main(argv: string[], given: Env): Promise<number> {
 
 // ---------------------------------------------------------------- run
 
-export interface Running { host: Awaited<ReturnType<Skein["cli"]["runHost"]>>; exchange: Exchange; pools: Pools; db: InstanceType<Skein["instances"]["HostDb"]>; stop(): Promise<void> }
+export interface Running { host: Awaited<ReturnType<Skein["cli"]["runHost"]>>; exchange: Exchange; pools: Pools; relay: Relay; db: InstanceType<Skein["instances"]["HostDb"]>; stop(): Promise<void> }
 
 /**
  * The host (skein-host run's runHost: the same router options from the same settings) with swap's
@@ -83,7 +84,12 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   let pools: Pools | undefined;
   // 0.15.0: GET /amm/wallet and /amm/wallet/tx (wallet.ts), the host's reads of swap's core wallet and its withdrawals.
   let walletHost: Router | undefined;
+  // 0.17.0 (skein-amm 0.44.0): POST /@<tokenId>/amm/swap, the swap relay (relay.ts), the request's close its only timer.
+  // PENDING (skein): the Router hands an application host GETs only (`appRead`) and a request carries no close
+  // signal, so this route is not reached on skein 0.3.1; `req.signal` is the close signal it needs.
+  let relay: Relay | undefined;
   const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) =>
+    (await relay?.route(h, route, req, (req as { signal?: AbortSignal }).signal)) ??
     (walletHost ? await walletRead(sk, walletHost, SWAP, h, route, url) : undefined) ?? await pools?.appRead(h, route, url, req);
   const appEvent = (h: string, rec: Record<string, unknown>) => {
     if (pools?.poolEvent(h, rec)) return;
@@ -92,6 +98,7 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   const host = await sk.cli.runHost(db, env, { router: { ...o.router, appRead, appEvent } });
   const log = (l: string) => env.out(`[open-exchange] ${l}`);
   pools = new Pools(host.router, log, sk.cid.decode);
+  relay = new Relay({ router: host.router, sk, log });
   walletHost = host.router;
   const pl = pools;
   ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log, ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
@@ -100,7 +107,7 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   void ex.updateSwap();
   void ex.reconcile();
   const exchange = ex;
-  return { host, exchange, pools: pl, db, stop: async () => { await exchange.idle(); pl.stop(); await host.stop(); db.close(); } };
+  return { host, exchange, pools: pl, relay: relay!, db, stop: async () => { await exchange.idle(); pl.stop(); await host.stop(); db.close(); } };
 }
 
 async function run(sk: Skein, given: Env, rest: string[]): Promise<number> {
