@@ -190,6 +190,26 @@ test "terms: a token on the list → the event token-terms {tokenId, terms}; nul
     try testing.expect((try tokens.termsChange(a, rows, null)) == .bad);
 }
 
+test "minLegSats (0.14.0): optional in the defaults and a token's terms, carried in the events and the /defaults read; not an integer refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const df = (try tokens.withDefaults(a, null, try dagjsonValue(a, "{\"terms\":{\"lpFeeBps\":30,\"validatorFeeBps\":5,\"commissionBps\":25,\"minLegSats\":10000}}"))).ok;
+    try testing.expectEqual(@as(u64, 10000), df.get("terms").?.getUint("minLegSats").?);
+    try testing.expect(std.mem.indexOf(u8, try tokens.defaultsJson(a, df), "\"minLegSats\":10000") != null);
+    const ev = try tokens.enabledEvent(a, "aa_0", "BEEF", df);
+    try testing.expectEqual(@as(u64, 10000), ev.get("terms").?.getUint("minLegSats").?);
+    try testing.expect((try tokens.withDefaults(a, null, try dagjsonValue(a, "{\"terms\":{\"lpFeeBps\":30,\"validatorFeeBps\":5,\"commissionBps\":25,\"minLegSats\":\"x\"}}"))) == .bad);
+    const tid = "ab" ** 32;
+    const id = tid ++ "_0";
+    const d: tokens.Deploy = .{ .token_id = id, .topic = "tm_color_" ++ id, .lookup = "ls_color_" ++ id };
+    const rows = tokens.rowsOf(try tokens.withRow(a, &.{}, try tokens.enabledRow(a, d, 100, .{ .bytes = "BEEF" })));
+    const good = (try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":{\"lpFeeBps\":40,\"validatorFeeBps\":6,\"commissionBps\":2,\"minLegSats\":0}}"))).ok;
+    const te = try tokens.termsEvent(a, good.token_id, good.terms);
+    try testing.expectEqual(@as(u64, 0), te.get("terms").?.getUint("minLegSats").?);
+    try testing.expect((try tokens.termsChange(a, rows, try dagjsonValue(a, "{\"tokenId\":\"" ++ id ++ "\",\"terms\":{\"lpFeeBps\":40,\"validatorFeeBps\":6,\"commissionBps\":2,\"minLeg\":1}}"))) == .bad);
+}
+
 test "answers: a body naming its request is an answer, not a request" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

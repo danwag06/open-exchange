@@ -18,7 +18,7 @@
 //!     {fn: "disable", args: {tokenId}}   a token on the list: the row `disabled`, the event
 //!                       `{event: "token-disabled", tokenId}`.
 //!     {fn: "terms", args: {tokenId, terms}}   a token on the list (enabled or disabled); `terms`
-//!                       `{lpFeeBps, validatorFeeBps, commissionBps}` (checked as the defaults' are)
+//!                       `{lpFeeBps, validatorFeeBps, commissionBps, minLegSats?}` (checked as the defaults' are)
 //!                       or null (market only): the event `{event: "token-terms", tokenId, terms}`
 //!                       (the host sends it to the token instance as root's `terms`); nothing kept
 //!                       here: the token instance's `amm/terms` is the record (0.12.0).

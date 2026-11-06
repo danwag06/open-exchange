@@ -11,7 +11,7 @@
 //!   enable's BEEF as the door handed it (its envelope, or the bytes), kept so an enable of a
 //!   disabled token needs no BEEF; never in the read.
 //! - **The defaults**, the root of the head `amm/defaults`: `{kind: "amm-defaults", terms?:
-//!   {lpFeeBps, validatorFeeBps, commissionBps}, market?: {minCommissionBps}}` — carried in the
+//!   {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?}, market?: {minCommissionBps}}` — carried in the
 //!   `token-enabled` event; the host sends them to a NEW token instance as root's messages.
 //! - **A deploy** (`deployOf`): the enable's BEEF names the token id's transaction as its subject,
 //!   and that transaction's output `<vout>` is a deploy (skein-1color's rules: a BRC-162 binary
@@ -200,15 +200,20 @@ fn bps(v: Value) bool {
     return v == .uint and v.uint <= 10_000;
 }
 
+/// The terms' optional field (0.14.0, skein-amm 0.40.0 src/terms.zig): the validator's minimum leg in
+/// sats, on the leg's sats side; any integer (absent or 0, none).
+const field_min_leg = "minLegSats";
+
 fn checkTerms(t: Value) ?[]const u8 {
-    if (t != .map) return "terms: want {lpFeeBps, validatorFeeBps, commissionBps} (integers, 0 to 10000), or null";
+    if (t != .map) return "terms: want {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?} (fees integers, 0 to 10000), or null";
     for (t.map) |e| {
         const known = for (terms_fields) |f| {
             if (eql(u8, f, e.key)) break true;
-        } else false;
-        if (!known) return "terms: want {lpFeeBps, validatorFeeBps, commissionBps} only";
+        } else eql(u8, field_min_leg, e.key);
+        if (!known) return "terms: want {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?} only";
     }
-    for (terms_fields) |f| if (!bps(t.get(f) orelse return "terms: want {lpFeeBps, validatorFeeBps, commissionBps} (integers, 0 to 10000), or null")) return "terms: each fee is an integer, 0 to 10000 basis points";
+    for (terms_fields) |f| if (!bps(t.get(f) orelse return "terms: want {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?} (fees integers, 0 to 10000), or null")) return "terms: each fee is an integer, 0 to 10000 basis points";
+    if (t.get(field_min_leg)) |m| if (m != .uint) return "terms: minLegSats is an integer, sats";
     return null;
 }
 
@@ -245,7 +250,7 @@ pub const TermsChange = union(enum) {
 };
 
 pub fn termsChange(a: Allocator, rows: []const Value, args: ?Value) !TermsChange {
-    const want = "want args {tokenId: <txid>_<vout>, terms: {lpFeeBps, validatorFeeBps, commissionBps} | null}";
+    const want = "want args {tokenId: <txid>_<vout>, terms: {lpFeeBps, validatorFeeBps, commissionBps, minLegSats?} | null}";
     const x = args orelse return .{ .bad = want };
     if (x != .map) return .{ .bad = want };
     for (x.map) |e| if (!eql(u8, e.key, "tokenId") and !eql(u8, e.key, "terms")) return .{ .bad = want };
