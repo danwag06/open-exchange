@@ -37,6 +37,9 @@
 //                          (price over the listed pools); the host's /amm/stats, /amm/positions?pool=, /amm/spends;
 //                          B's holders; then B's other lineage on a SECOND host (the fixtures' swap_token_change
 //                          competes with swap_tokens_in): deploy → sats-in swap → a swap WITH token change → its close
+//   one swap per pool    → (0.16.0) on hosts of their own: two, then three, swaps on one pool output relayed at once
+//                          through the host's own relay before either is admitted → exactly one accepted, the others
+//                          pool_spent with its continuation; the pools route at the new outpoint, its trade row
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -658,6 +661,129 @@ try {
       if (!process.env.KEEP) rmSync(home2, { recursive: true, force: true });
     }
   }
+
+  // ------------------------------------------------ one swap in flight per pool (0.16.0; skein-amm 0.43.0, D3): B on hosts of their own
+  // Two, then three, swaps on ONE pool output, relayed at once through this host's own relay (`/call`
+  // amm.swap.submit, the validator this node: in-VM) before either is admitted: the validator signs one; the others
+  // wait for it to settle and are answered pool_spent with the new state; the pools route lists the new outpoint, the
+  // trade row exists. The swaps are built from the fixtures (swap_bsv_in's outputs and call), each funded by its own
+  // output of one funding transaction (fund:1, the fixtures' taker key(0x1e)) and its preimage computed here. Each
+  // race on a host of its own (the fixtures give one pool output to race on).
+  const raceHost = async (n: number) => {
+    const home3 = mkdtempSync(join(tmpdir(), `ox-accept-race${n}-`));
+    writeFileSync(join(home3, "key"), `${shared.toHex()}\n`, { mode: 0o600 });
+    const port3 = await freePort(), hostPort3 = await freePort(), p2pPort3 = await freePort();
+    writeFileSync(join(home3, "host.env"), [
+      `SKEIN_KEY_FILE=${join(home3, "key")}`,
+      ...(ROCKS ? [`SKEIN_STORE_ROCKSDB=${join(home3, "store-rocksdb")}`] : FILE ? [] : [`SKEIN_STORE_SQLITE=${join(home3, "store.sqlite")}`]),
+      `SKEIN_ROOT_INSTANCE=${SWAP}`, "SKEIN_NETWORK=regtest", `SKEIN_ROUTER_PORT=${port3}`, `SKEIN_HOST_PORT=${hostPort3}`, `SKEIN_HEADERS_URL=${feedUrl}`,
+      `SKEIN_ARC_URL=${arcade.url}`, "SKEIN_ARC_TOKEN=t", `SKEIN_ARC_EVENTS_URL=${arcade.eventsUrl}`, `SKEIN_LIBP2P_LISTEN=/ip4/127.0.0.1/tcp/${p2pPort3}`,
+      ...(kernel ? [`SKEIN_KERNEL_BIN=${kernel}`] : []), "",
+    ].join("\n"));
+    const env3: Env = { vars: { HOME: process.env.HOME, PATH: process.env.PATH, SKEIN_HOME: home3 }, out: (l) => { if (process.env.VERBOSE) process.stdout.write(`  3| ${l}\n`); }, err: (l) => { process.stdout.write(`  3! ${l}\n`); } };
+    const R3 = `http://127.0.0.1:${port3}`;
+    const get3 = async (path: string) => { const r = await fetch(`${R3}${path}`); return r.status === 200 ? await r.json() as unknown : undefined; };
+    let z: Running | undefined;
+    try {
+      const fr3 = await firstRun(sk, env3);
+      check(!fr3.failed, `race host (${n}): the first run (${fr3.made.join("; ")})`);
+      if (ROCKS) await sleep(1500);
+      z = await startExchange(sk, settings(sk, env3));
+      await z.exchange.idle();
+      await until("the race host's chain at the fixtures' roots", async () => { const t = await (await z!.host.router.hydrate(SWAP)).kernel.chainTip(); return t && t.height >= topH ? t : undefined; });
+      // Terms first (the validator signs nothing without them), then B.
+      await z.exchange.rootMessage(SWAP, "amm/admin", { fn: "defaults", args: { terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 } } });
+      await until("the race host's defaults", async () => ((await get3(`/@${SWAP}/amm/defaults`)) as { terms?: unknown } | undefined)?.terms ? true : undefined);
+      await z.exchange.rootMessage(SWAP, "amm/admin", { fn: "enable", args: { tokenId: B, beef: Uint8Array.from(ftx.get("token_deploy")!.toAtomicBEEF()) } });
+      check(!!(await until("/@B/amm/token on the race host", async () => (await fetch(`${R3}/@${B}/amm/token`)).status === 200 ? true : undefined, 60_000)), "race host: terms set, B enabled by root");
+      await z.exchange.idle();
+      const st3 = (await fetch(`${R3}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([tmB]) }, body: Uint8Array.from(ftx.get("pool_deploy")!.toBEEF()) })).status;
+      type PoolsB = { market?: { commissionPkh?: string }; validators?: Array<{ identity?: string; peerId?: string }>; pools?: Array<{ outpoint?: string; poolId?: string }> };
+      const listed = await until("B's pool listed on the race host", async () => { const v = await get3(`/@${B}/amm/pools`) as PoolsB | undefined; return v?.pools?.some((q) => q.poolId === poolB) && v.validators?.some((q) => q.identity === SHARED && q.peerId) ? v : undefined; }, 60_000);
+      check(st3 === 200 && !!listed, `race host: B's pool deployed (${st3}) and listed under this host's beating validator`);
+      const peerId = listed?.validators?.find((q) => q.identity === SHARED)?.peerId ?? "";
+
+      const fund = ftx.get("fund")!, pd = ftx.get("pool_deploy")!, base = ftx.get("swap_bsv_in")!;
+      const taker = new PrivateKey("1e".repeat(32), 16);
+      const takerLock = new P2PKH().lock(taker.toPublicKey().toHash());
+      check(fund.outputs[1]!.lockingScript.toHex() === takerLock.toHex(), "the fixtures' fund:1 pays the taker key(0x1e)");
+      // The commission pays this relay (amm-p2p's commission key; the pools route's market.commissionPkh): the call's commissionPkh (push 6) and the commission output (4) rewritten from the fixtures' to ours.
+      const baseChunks0 = UnlockingScript.fromBinary(base.inputs[0]!.unlockingScript!.toBinary()).chunks;
+      const fxCom = Buffer.from(baseChunks0[6]!.data!).toString("hex");
+      const ourCom = listed?.market?.commissionPkh ?? "";
+      const outs = base.outputs.slice(0, 5).map((o, i) => i === 4 ? { satoshis: o.satoshis, lockingScript: LockingScript.fromHex(o.lockingScript.toHex().replace(fxCom, ourCom)) } : o);
+      check(base.outputs[4]!.lockingScript.toHex().includes(fxCom), "the fixture swap's output 4 is the commission to its commissionPkh");
+      const poolSats = pd.outputs[0]!.satoshis!;
+      const exact = outs.reduce((k, o) => k + o.satoshis!, 0) - poolSats + 500;
+      const ft = new Transaction();
+      ft.addInput({ sourceTransaction: fund, sourceOutputIndex: 1, unlockingScriptTemplate: new P2PKH().unlock(taker), sequence: 0xffffffff });
+      for (let k = 0; k < 5; k++) ft.addOutput({ lockingScript: takerLock, satoshis: exact });
+      ft.addOutput({ lockingScript: takerLock, satoshis: fund.outputs[1]!.satoshis! - 5 * exact - 300 });
+      await ft.sign();
+      // The pool's scriptCode (unlock.zig poolScriptCode): the lock after the 1Color value prefix, past OP_NOP OP_CODESEPARATOR.
+      const ps = pd.outputs[0]!.lockingScript.toBinary();
+      let off = 33;
+      const nb = ps[off]!;
+      off += nb >= 0x01 && nb <= 0x4b ? 1 + nb : nb === 0x4c ? 2 + ps[off + 1]! : 1;
+      const lockPart = ps.slice(off + 1);
+      check(ps[off] === 0x6d && lockPart[0] === 0x61 && lockPart[1] === 0xab, "the pool output: value prefix, OP_2DROP, then OP_NOP OP_CODESEPARATOR");
+      const scriptCode = (sdk as unknown as { Script: { fromBinary: (b: number[]) => unknown } }).Script.fromBinary(lockPart.slice(2));
+      const baseChunks = baseChunks0.map((c, i) => (i === 6 ? { op: 20, data: Array.from(Buffer.from(ourCom, "hex")) } : c));
+      const TS = (sdk as unknown as { TransactionSignature: { formatBip143: (p: Record<string, unknown>) => Uint8Array } }).TransactionSignature;
+      /** The k-th swap on pool_deploy:0: swap_bsv_in's call and outputs, funded by the funding's output k, the validator's slot empty. */
+      const swapOn = async (k: number) => {
+        const t = new Transaction();
+        t.version = base.version;
+        t.lockTime = base.lockTime;
+        t.addInput({ sourceTransaction: pd, sourceOutputIndex: 0, unlockingScript: new UnlockingScript(), sequence: 0xffffffff });
+        t.addInput({ sourceTransaction: ft, sourceOutputIndex: k, unlockingScriptTemplate: new P2PKH().unlock(taker), sequence: 0xffffffff });
+        for (const o of outs) t.addOutput({ lockingScript: o.lockingScript, satoshis: o.satoshis });
+        const pre = TS.formatBip143({ sourceTXID: pd.id("hex"), sourceOutputIndex: 0, sourceSatoshis: poolSats, transactionVersion: t.version, otherInputs: [t.inputs[1]], outputs: t.outputs, inputIndex: 0, subscript: scriptCode, inputSequence: 0xffffffff, lockTime: t.lockTime, scope: 0x41 });
+        const chunks = baseChunks.map((c, i) => (i === 1 || i === 10 ? { op: 0 } : i === 11 ? new LockingScript().writeBin(Array.from(pre)).chunks[0]! : c));
+        t.inputs[0]!.unlockingScript = new UnlockingScript(chunks as never);
+        await t.sign();
+        return t;
+      };
+      // A session with B's instance (the handshake under /@<B>/, as the pages make it: RawBox's).
+      const rb = new RawBox(keyWallet(admin), `${R3}/@${B}`);
+      await rb.ready();
+      const taf = (rb as unknown as { af: { fetch: (u: string, i: RequestInit) => Promise<Response> } }).af;
+      const b64 = (b: number[] | Uint8Array) => ({ "/": { bytes: Buffer.from(b).toString("base64").replace(/=+$/, "") } });
+      type Rec = { status?: string; reason?: string; txid?: string; poolState?: { outpoint?: string } };
+      const relay = async (t: InstanceType<typeof Transaction>, pool: string): Promise<Rec | { error: string }> => {
+        const res = await taf.fetch(`${R3}/@${B}/amm/call`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fn: "amm.swap.submit", args: { funding: b64(ft.toAtomicBEEF()), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId, expires: Date.now() + 90_000 } }) });
+        const j = await res.json().catch(() => ({})) as { result?: Rec; error?: { code?: string; message?: string } };
+        return j.result ?? { error: `${res.status} ${JSON.stringify(j.error ?? j).slice(0, 200)}` };
+      };
+      /** `n` swaps on `pool`, relayed at once: exactly one accepted, the rest pool_spent with its continuation. */
+      const race = async (n: number, from: number, pool: string) => {
+        const txs = await Promise.all(Array.from({ length: n }, (_, i) => swapOn(from + i)));
+        const got = await Promise.all(txs.map((t) => relay(t, pool)));
+        const won = got.filter((g) => (g as Rec).status === "accepted") as Rec[];
+        const lost = got.filter((g) => (g as Rec).status !== "accepted") as Rec[];
+        const next = won[0]?.txid ? `${won[0].txid}_0` : "";
+        check(won.length === 1 && lost.length === n - 1 && lost.every((g) => g.status === "refused" && g.reason === "pool_spent" && g.poolState?.outpoint === next),
+          `${n} swaps on one pool output, relayed at once: one accepted (${String(won[0]?.txid).slice(0, 8)}…), ${n - 1} refused pool_spent with its continuation (${JSON.stringify(got.map((g) => (g as Rec).status ?? (g as { error: string }).error)).slice(0, 300)}; ${lost.map((g) => `${g.reason} ${String(g.poolState?.outpoint).slice(0, 8)}`).join(", ")})`);
+        const moved = await until("the pools route at the new outpoint", async () => ((await get3(`/@${B}/amm/pools`)) as PoolsB | undefined)?.pools?.find((q) => q.poolId === poolB && q.outpoint === next), 30_000);
+        const row = won[0]?.txid ? await get3(`/@${B}/amm/trades?txid=${won[0].txid}`) as Record<string, unknown> | undefined : undefined;
+        check(!!moved && row?.poolId === poolB, `…/@<B>/amm/pools lists the pool at the accepted swap's continuation; its trade row (${JSON.stringify(row)?.slice(0, 120)})`);
+        return won[0]?.txid;
+      };
+      // n on the deployed pool output.
+      const w1 = await race(n, 0, `${pd.id("hex")}_0`);
+      // Two more on the same output afterwards: the pool is spent and nothing in flight — pool_spent at once, none signed.
+      if (w1 && n === 2) {
+        const late = await Promise.all([3, 4].map(async (k) => relay(await swapOn(k), `${pd.id("hex")}_0`)));
+        check(late.every((g) => (g as Rec).status === "refused" && (g as Rec).reason === "pool_spent" && (g as Rec).poolState?.outpoint === `${w1}_0`), `…two more on the spent output afterwards: refused pool_spent with the new state, none signed (${late.map((g) => (g as Rec).reason ?? (g as { error: string }).error).join(", ")})`);
+      }
+    } finally {
+      await z?.stop().catch(() => {});
+      if (ROCKS) await sleep(1500);
+      if (!process.env.KEEP) rmSync(home3, { recursive: true, force: true });
+    }
+  };
+  await raceHost(2);
+  await raceHost(3);
 
   // ------------------------------------------------ disable, enable again
   await send({ fn: "disable", args: { tokenId: A } });
