@@ -200,6 +200,44 @@ pub fn atomicFor(a: Allocator, wire: []const u8, txid: [32]u8) ![]u8 {
     return w.beef.serialize(a, b);
 }
 
+/// The Atomic BEEF of `txid` alone, cut from the bundle (0.15.4): the transaction and its ancestry in the bundle back
+/// to proven ones (a transaction with a BUMP needs no parents), the BUMPs those name (re-indexed), written parents
+/// first (skein-sdk `beef.sorted`, as the relay writes). What the wallet's internalize takes (it refuses a BEEF that
+/// is not parents first: `NotParentsFirst`, ovh 0.15.3).
+pub fn cutFor(a: Allocator, wire: []const u8, txid: [32]u8) ![]u8 {
+    const b = try w.beef.parse(a, wire);
+    const keep = try a.alloc(bool, b.entries.len);
+    @memset(keep, false);
+    var todo: std.ArrayList([32]u8) = .empty;
+    try todo.append(a, txid);
+    while (todo.pop()) |t| {
+        const i = b.indexOf(t) orelse continue;
+        if (keep[i]) continue;
+        keep[i] = true;
+        const e = b.entries[i];
+        if (e.bump != null) continue;
+        if (e.tx) |tx| for (tx.inputs) |in| try todo.append(a, in.previous_outpoint.txid.bytes);
+    }
+    const bump_at = try a.alloc(?usize, b.bumps.len);
+    @memset(bump_at, null);
+    var bumps: std.ArrayList(w.bsvz.spv.MerklePath) = .empty;
+    var entries: std.ArrayList(w.beef.Entry) = .empty;
+    for (b.entries, keep) |e, k| {
+        if (!k) continue;
+        var x = e;
+        if (e.bump) |j| {
+            if (bump_at[j] == null) {
+                bump_at[j] = bumps.items.len;
+                try bumps.append(a, b.bumps[j]);
+            }
+            x.bump = bump_at[j];
+        }
+        try entries.append(a, x);
+    }
+    const cut = try w.beef.sorted(a, .{ .version = b.version, .atomic = txid, .bumps = bumps.items, .entries = entries.items });
+    return w.beef.serialize(a, cut);
+}
+
 /// Output `vout` of the BEEF's transaction `txid`: its satoshis and locking script, or null (not in it, no raw, no such output).
 pub fn outputIn(a: Allocator, wire: []const u8, txid: [32]u8, vout: u32) !?struct { satoshis: u64, script: []const u8 } {
     const b = w.beef.parse(a, wire) catch return null;

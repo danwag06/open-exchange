@@ -808,6 +808,32 @@ try {
   await send({ fn: "withdraw", args: { lockingScript: "76a9" } });
   await (await r.hydrate(SWAP)).kernel.idle();
   check((await getJson("/amm/wallet") as { withdrawals?: unknown[] }).withdrawals?.length === 1, "withdraw with args (a script from the page): refused");
+  // 0.15.4: a bundle whose entries are NOT parents first (the payment, then the deploy, then the payment's funding):
+  // the door takes it; the wallet's internalize gets the payment's own BEEF, cut and written parents first.
+  const dR = deploy(0x52, "RRR", 1);
+  const R2 = `${dR.id("hex")}_0`;
+  const hR = mineAlone(dR);
+  pushHeader();
+  await until("swap's chain at R's deploy", async () => { const t = await (await r.hydrate(SWAP)).kernel.chainTip(); return t && t.height >= hR ? t : undefined; });
+  const sats0 = ((await getJson("/amm/wallet")) as { sats?: number }).sats ?? 0;
+  const odd = await signed(payment(5, 2000));
+  const ob = new esm.Beef();
+  ob.mergeBeef(Array.from(dR.toBEEF()));
+  ob.mergeTransaction(odd.tx);
+  const oddById = new Map(ob.txs.map((t) => [t.txid, t]));
+  ob.txs.splice(0, ob.txs.length, oddById.get(odd.tx.id("hex"))!, oddById.get(dR.id("hex"))!, oddById.get(PF.id("hex"))!);
+  const ow = new esm.Utils.Writer();
+  ob.toWriter(ow as never);
+  const oddBytes = Uint8Array.from(ow.toArray());
+  const parsedOdd = esm.Beef.fromBinary(Array.from(oddBytes));
+  check(parsedOdd.txs.map((t) => t.txid).join() === [odd.tx.id("hex"), dR.id("hex"), PF.id("hex")].join(), "a bundle written NOT parents first: the payment, the deploy, then the payment's funding");
+  const okOdd = await post(enableUrl(R2, odd), oddBytes);
+  check(okOdd.status === 200 && (okOdd.body.result as { tokenId?: string } | undefined)?.tokenId === R2, `…enabled (${okOdd.status} ${JSON.stringify(okOdd.body).slice(0, 120)})`);
+  const walOdd = await until("swap's wallet holds the odd bundle's payment", async () => { const v = await getJson("/amm/wallet") as { sats?: number } | undefined; return v?.sats === sats0 + 2000 ? v : undefined; }, 30_000);
+  check(walOdd?.sats === sats0 + 2000 && !lines.some((l) => /wallet step 1 → errored · wallet: NotParentsFirst/.test(l)), `…the coin in /amm/wallet (${JSON.stringify(walOdd)}): the wallet took the payment's own BEEF, parents first`);
+  await until("R up", async () => (await get(`/@${R2}/amm/token`)).status === 200 ? true : undefined, 60_000);
+  await x.exchange.idle();
+  keep(x, R2);
   // Disabled by the admin: the paid route refuses it (only the admin enables it again).
   await send({ fn: "disable", args: { tokenId: P } });
   await until("P stopped", async () => (await get(`/@${P}/amm/token`)).status === 404 ? true : undefined);

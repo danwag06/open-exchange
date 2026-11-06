@@ -229,7 +229,7 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    try testing.expectEqualStrings("0.15.3", scbor.Value.str(m.get("version")).?);
+    try testing.expectEqualStrings("0.15.4", scbor.Value.str(m.get("version")).?);
     // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
     // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
     // anything); claim is listed in no role.
@@ -392,6 +392,31 @@ test "the paid enable (0.15.3): one BEEF with the deploy and the payment; enable
     try testing.expectEqualStrings("02" ++ "11" ** 32, pr.getText("paidBy").?);
     const js = try tokens.tokensJson(a, &.{pr});
     try testing.expect(std.mem.indexOf(u8, js, "\"paymentTxid\"") != null and std.mem.indexOf(u8, js, "\"deploy\"") == null);
+}
+
+test "the payment's own BEEF (0.15.4): cut from a bundle whose entries are not parents first — the payment and its ancestry only, the unrelated deploy dropped, written parents first, Atomic on the payment" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pay = unhex(a, vec.pool_deploy); // spends the fixtures' deploy and funding
+    const p1 = unhex(a, vec.fund);
+    const p2 = unhex(a, vec.token_deploy);
+    const other = unhex(a, vec.legacy_deploy0);
+    const pt = w.beef.txidOf(pay);
+    var entries = [_]w.beef.Entry{
+        .{ .txid = pt, .format = .raw, .raw = pay },
+        .{ .txid = w.beef.txidOf(other), .format = .raw, .raw = other },
+        .{ .txid = w.beef.txidOf(p1), .format = .raw, .raw = p1 },
+        .{ .txid = w.beef.txidOf(p2), .format = .raw, .raw = p2 },
+    };
+    const bundle = try w.beef.serialize(a, .{ .version = w.beef.V2, .bumps = &.{}, .entries = &entries });
+    try testing.expect(!w.beef.parentsFirst(try w.beef.parse(a, bundle)));
+    const cut = try w.beef.parse(a, try paid.cutFor(a, bundle, pt));
+    try testing.expectEqualSlices(u8, &pt, &cut.atomic.?);
+    try testing.expectEqual(@as(usize, 3), cut.entries.len);
+    try testing.expect(cut.find(w.beef.txidOf(other)) == null);
+    try testing.expect(w.beef.parentsFirst(cut));
+    try testing.expectEqualSlices(u8, &pt, &cut.entries[2].txid);
 }
 
 test "price and withdraw (0.15.0): price {sats | null} → the record (0.15.3: no event); withdraw takes no args; the kept withdrawals and the answer (the payment's derivation and sender); the builder's fee" {

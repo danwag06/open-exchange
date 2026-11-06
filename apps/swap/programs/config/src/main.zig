@@ -53,7 +53,8 @@
 //! **The paid enable** (0.15.3; paid.zig): `POST /enable?tokenId=&paymentTxid=&paymentVout=&derivationPrefix=
 //! &derivationSuffix=`, the body ONE BEEF with the token's deploy and the payment; filters kernel.brc104,
 //! kernel.beef, then this app's `enable-check` (fn `enableCheck`); the handler `enablePaid` checks the payment
-//! pays the BRC-29 key derived for the sender, sends it to the box `amm/pay` (a loopback message: its step
+//! pays the BRC-29 key derived for the sender, sends its own BEEF (0.15.4: cut from the bundle, parents first) to the
+//! box `amm/pay` (a loopback message: its step
 //! launches the wallet's `internalize`, which sends the payment on through the chain app; the request does not
 //! wait for it), and does what the admin's enable does, keeping `{paidBy, paymentTxid, satoshisPaid}`.
 //!
@@ -198,7 +199,7 @@ fn enablePaid(a: Allocator, in: Value, arg: Value) !Value {
     _ = try vm.send(a, me, paid.pay_box, .{ .map = try a.dupe(cbor.Entry, &.{
         .{ .key = "fn", .value = .{ .text = "pay" } },
         .{ .key = "args", .value = .{ .map = try a.dupe(cbor.Entry, &.{
-            .{ .key = "tx", .value = .{ .bytes = try paid.atomicFor(a, wire, np.txid) } },
+            .{ .key = "tx", .value = .{ .bytes = try paid.cutFor(a, wire, np.txid) } },
             .{ .key = "outputIndex", .value = .{ .uint = np.vout } },
             .{ .key = "derivationPrefix", .value = .{ .text = np.prefix } },
             .{ .key = "derivationSuffix", .value = .{ .text = np.suffix } },
