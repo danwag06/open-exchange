@@ -1334,7 +1334,6 @@
                       "bytes": "..."
                     }
                   },
-                  "expires": 1793750415000,
                   "created": 1793750400000,
                   "updated": 1793750401200,
                   "txid": "d033883000000000000000000000000000000000000000000000000000000000"
@@ -3253,7 +3252,7 @@
       },
       "SwapRecord": {
         "type": "object",
-        "description": "The relay record as `amm.swap.status` answers it, as dag-json (bytes are `{\"/\": {\"bytes\": <base64>}}`).",
+        "description": "The relay record as `amm.swap.status` answers it, as dag-json (bytes are `{\"/\": {\"bytes\": <base64>}}`). 0.17.0: no `expires`, no `timeout` — `failed` is the relaying host's error for its call to the validator (dial refused, the stream closed without a frame, the host restarted).",
         "properties": {
           "id": {
             "type": "string"
@@ -3263,7 +3262,6 @@
               "pending",
               "accepted",
               "refused",
-              "timeout",
               "failed"
             ]
           },
@@ -3278,9 +3276,6 @@
           },
           "validator": {
             "type": "object"
-          },
-          "expires": {
-            "type": "integer"
           },
           "created": {
             "type": "integer"
@@ -3309,7 +3304,6 @@
           "status",
           "pool",
           "validator",
-          "expires",
           "created",
           "updated"
         ]
