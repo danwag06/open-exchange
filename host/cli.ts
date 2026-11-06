@@ -23,7 +23,8 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Exchange, DISCOVERY, DISCOVERY_TOPICS, SWAP } from "./exchange.ts";
 import { Pools } from "./pools.ts";
-import { IMAGES_DIR, load, skeinVersion, type Skein } from "./skein.ts";
+import { walletRead } from "./wallet.ts";
+import { IMAGES_DIR, load, skeinVersion, type Router, type Skein } from "./skein.ts";
 
 type Vars = Record<string, string | undefined>;
 export interface Env { vars: Vars; out(l: string): void; err(l: string): void }
@@ -80,7 +81,10 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   // 0.13.0: GET /amm/stats and /amm/positions too; 0.14.0: /amm/spends, the market candles and the pool event
   // feeds (a token instance's emitted `pool` event goes to the feeds, not to swap's reactions).
   let pools: Pools | undefined;
-  const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) => await pools?.appRead(h, route, url, req);
+  // 0.15.0: GET /amm/wallet (wallet.ts), the host's read of swap's core wallet.
+  let walletHost: Router | undefined;
+  const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) =>
+    (walletHost ? await walletRead(sk, walletHost, SWAP, h, route) : undefined) ?? await pools?.appRead(h, route, url, req);
   const appEvent = (h: string, rec: Record<string, unknown>) => {
     if (pools?.poolEvent(h, rec)) return;
     if (ex) ex.event(h, rec); else early.push([h, rec]);
@@ -88,9 +92,10 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   const host = await sk.cli.runHost(db, env, { router: { ...o.router, appRead, appEvent } });
   const log = (l: string) => env.out(`[open-exchange] ${l}`);
   pools = new Pools(host.router, log, sk.cid.decode);
+  walletHost = host.router;
   const pl = pools;
   ex = new Exchange({ sk, router: host.router, hostKey: key.identity, hostWallet: key.wallet, log, ...(o.swapAppDir ? { swapAppDir: o.swapAppDir } : {}) });
-  env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
+  env.out(`open-exchange: swap's events wired (token-enabled, token-disabled, discovery-on, discovery-off, claimed, enable-price) · skein ${skeinVersion()} · images ${IMAGES_DIR} · the host's key ${key.identity.slice(0, 8)}…`);
   for (const [h, rec] of early.splice(0)) ex.event(h, rec);
   void ex.updateSwap();
   void ex.reconcile();

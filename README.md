@@ -71,6 +71,8 @@ passes anything, so the host's key may send these too.
 | `terms {tokenId, terms}` (0.12.0; `terms` the three fees, 0.14.0 with an optional `minLegSats` (sats), or `null`) | nothing (the token instance's `amm/terms` is the record) | `token-terms {tokenId, terms}` | sends root's `terms` to the token's instance (`amm/validator`); not replayed at start |
 | `discovery {on}` | `{on, since}` under `amm/discovery` | `discovery-on` / `discovery-off` | starts / stops `discovery` |
 | `defaults {terms?, market?}` (0.14.0: `terms` may carry `minLegSats`) | `amm/defaults` | none | the next `token-enabled` events carry them |
+| `price {sats \| null}` (0.15.0; the price to enable a token, null: off) | `{sats}` under `amm/enable-price` (read: `enablePriceSats` on `/amm/defaults`) | `enable-price {sats}` | sets the price of swap's route `POST /amm/enable` (root's `dispatch`: the same row with `price`, or without one); replayed at start |
+| `withdraw {lockingScript}` (0.15.0; hex) | nothing | `withdraw {lockingScript}` | not wired in 0.15.0 (no reaction) |
 | `claim` (box `amm/claim`, any sender; the first only) | `{claimant, since}` under `amm/claim` (read: `GET <swap>/amm/admin`) | `claimed {claimant}` | grants `amm.admin` on swap to the claimant (root's `grant`) |
 
 When `token-enabled` names a token that has no instance yet, the host:
@@ -108,14 +110,42 @@ Reads on swap (anyone):
 
 - `/amm/tokens`: `[{tokenId, topic, sym, dec, status, since, iconUrl}]` (0.11.0: `iconUrl` =
   `/@discovery/1color/<tokenId>/icon`; the data-URL `icon` is gone)
-- `/amm/defaults`
+- `/amm/defaults`: `{terms?, market?, enablePriceSats}` (0.15.0: `enablePriceSats` null when unset)
 - `/amm/discovery`: `{on, since}`
+- `/amm/wallet` (0.15.0, the host's read of swap's wallet state, no step): `{sats, outputs}` — the coins swap's
+  wallet spends (the paid enables' payments), their total and count
 - `/`: the pages
+
+## The paid enable (0.15.0)
+
+Any signed sender may enable a token for a fee, when the admin has set a price:
+
+    POST <origin>/amm/enable?tokenId=<txid>_<vout>
+    Content-Type: application/octet-stream
+    body: the token's deploy, an Atomic BEEF
+
+The route's filters run in order before anything is recorded: `kernel.brc104` (signed, BRC-104),
+`kernel.beef` (the BEEF proven), the swap app's `enable-check`, then `kernel.pay` (ts-stack's payment wire).
+`enable-check` refuses before any payment:
+
+| refusal | status | code |
+|---|---|---|
+| no price set (the paid enable is off) | 403 | `ERR_PAID_ENABLE_OFF` |
+| no `tokenId` in the query | 400 | `ERR_BAD_REQUEST` |
+| the token is enabled already | 409 | `ERR_TOKEN_ENABLED` |
+| the token was disabled by the admin (only the admin enables it again) | 409 | `ERR_TOKEN_DISABLED` |
+| the body is not the token's deploy | 400 | `ERR_BAD_DEPLOY` |
+
+Then `kernel.pay` answers 402 with `x-bsv-payment-satoshis-required: <price>` and a derivation prefix; the
+stock AuthFetch pays it (a BRC-29 payment to swap's key) and resends with `X-BSV-Payment`. The payment is
+internalized into swap's wallet before the handler runs. The handler enables the token as the admin's enable
+does (the row, the event `token-enabled` with the defaults) and keeps `{paidBy, paymentTxid, satoshisPaid}`
+on the row; it answers `{fn: "enable", result: <the row>}`. One fee, once; only the admin disables.
 
 ## Requirements
 
 - **Node 24 or later**, on any platform node runs on. Nothing else: no toolchain.
-- **skein 0.2.8**, the npm dependency (`package.json`; 0.2.8: the host keeps its liveness beats in host.db and reloads them at start, so `/amm/pools` lists pools again right after a restart). Its host is built to JavaScript, and its
+- **skein 0.2.9**, the npm dependency (`package.json`; 0.2.9: paid routes, `kernel.pay`; 0.2.8: the host keeps its liveness beats in host.db and reloads them at start, so `/amm/pools` lists pools again right after a restart). Its host is built to JavaScript, and its
   kernel is one wasm file the host loads: one machine per active instance on a worker thread,
   every instance a set of the host's one SQLite database (`SKEIN_STORE_SQLITE`, the default
   the first run writes). A host.env naming `SKEIN_STORE_ROCKSDB` runs skein's native kernel process

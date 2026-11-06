@@ -21,6 +21,13 @@
 //   disable              → stopped (404 at /@<id>); enable again (no BEEF), by root (the host's key) → started
 //   terms {tokenId, terms} → (0.12.0) the event token-terms; the host sends root's terms to the token instance
 //                          (/@<id>/amm/terms follows; null = market only); a token not on the list refused
+//   the paid enable      → (0.15.0) POST /amm/enable?tokenId= with the deploy's Atomic BEEF, by a stranger's stock
+//                          AuthFetch (a funded test wallet): no price → 403 before any payment; the admin's price
+//                          {sats} → /amm/defaults enablePriceSats and the route's price (the host as owner); unpaid →
+//                          402 with the price; paid → the token enabled with the default terms, its instance up, the
+//                          payment on the row; again → 409 before payment; the coin in swap's wallet (GET /amm/wallet);
+//                          a BEEF not the token's deploy → 400; disabled by the admin → 409 (only the admin re-enables);
+//                          the price replayed onto the route after a restart and after the swap app's reinstall
 //   discovery off / on   → stopped / started
 //   restart the host     → reconcile creates nothing and starts what swap says
 //   history (0.13.0; 0.14.0) → a second token B from the token app's own fixtures (src/fixtures/vectors.zig: its deploy,
@@ -56,7 +63,10 @@ import { priceOf } from "@dcasegr/amm-engine";
 
 type Sdk = typeof import("@bsv/sdk");
 // @bsv/sdk as skein's own dependency (resolved from the skein package).
-const sdk = await import(pathToFileURL(createRequire(fileURLToPath(import.meta.resolve("@dcasegr/skein/package.json"))).resolve("@bsv/sdk")).href) as Sdk;
+const sdkCjs = createRequire(fileURLToPath(import.meta.resolve("@dcasegr/skein/package.json"))).resolve("@bsv/sdk");
+const sdk = await import(pathToFileURL(sdkCjs).href) as Sdk;
+// 0.15.0: the paid enable's payer — AuthFetch and its wallet's keys from the sdk's ESM build, as skein's keyWallet is.
+const esm = await import(pathToFileURL(join(dirname(sdkCjs), "../esm/mod.js")).href) as Sdk;
 const { KeyDeriver, LockingScript, MerklePath, P2PKH, PrivateKey, Transaction, UnlockingScript } = sdk;
 const sk = await load();
 const { RawBox } = sk.raw;
@@ -103,10 +113,10 @@ function mine(prev: Uint8Array, merkleRoot: Uint8Array, time: number): Uint8Arra
   }
 }
 const headers: Uint8Array[] = [mine(sha256d(REGTEST_GENESIS), sha256d(Buffer.concat([internal("cb".repeat(32)), internal("cc".repeat(32))])), 1_790_200_000)];
-function mineAlone(t: InstanceType<typeof Transaction>): number {
+function mineAlone(t: InstanceType<typeof Transaction>, MP: typeof MerklePath = MerklePath): number {
   const height = headers.length + 1;
   const cb = (height * 17 % 256).toString(16).padStart(2, "0").repeat(32);
-  t.merklePath = new MerklePath(height, [[{ offset: 0, hash: cb }, { offset: 1, hash: t.id("hex"), txid: true }]]);
+  t.merklePath = new MP(height, [[{ offset: 0, hash: cb }, { offset: 1, hash: t.id("hex"), txid: true }]]);
   headers.push(mine(sha256d(headers.at(-1)!), sha256d(Buffer.concat([internal(cb), internal(t.id("hex"))])), 1_790_200_000 + height * 600));
   return height;
 }
@@ -330,7 +340,7 @@ try {
   await new RawBox(keyWallet(other), `${R}/@${SWAP}`).send(swapId, "amm/admin", { fn: "defaults", args: { market: { minCommissionBps: 9 } } });
   await r.settled();
   await (await r.hydrate(SWAP)).kernel.idle();
-  check(JSON.stringify(await getJson(`/@${SWAP}/amm/defaults`)) === "{}", `a stranger's defaults in amm/admin (unclaimed swap): gated, nothing written (${JSON.stringify(await getJson(`/@${SWAP}/amm/defaults`))})`);
+  check(JSON.stringify(await getJson(`/@${SWAP}/amm/defaults`)) === '{"enablePriceSats":null}', `a stranger's defaults in amm/admin (unclaimed swap): gated, nothing written (${JSON.stringify(await getJson(`/@${SWAP}/amm/defaults`))})`);
 
   // ------------------------------------------------ the claim: the admin's own {fn: "claim"} in box amm/claim, as the Settings page sends it
   await new RawBox(keyWallet(admin), `${R}/@${SWAP}`).send(swapId, "amm/claim", { fn: "claim" });
@@ -680,6 +690,93 @@ try {
   await send({ fn: "terms", args: { tokenId: A, terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 } } });
   check(!!(await until("A's terms back to the defaults", async () => (await termsOf())?.commissionBps === 25 ? true : undefined)), "terms back to 30/5/25 for the rest of the run");
 
+  // ------------------------------------------------ the paid enable (0.15.0): POST /amm/enable, kernel.pay after enable-check
+  const dP = deploy(0x50, "PPP", 3);
+  const P = `${dP.id("hex")}_0`;
+  const payer = sk.hostenv.parseKey("5a".repeat(32), "payer");
+  const PAYER = payer.toPublicKey().toString();
+  // The payer's coins: one mined funding transaction (a coin per payment), so every payment's BEEF is proven.
+  const payHold = new esm.P2PKH().lock(payer.toPublicKey().toHash());
+  const PF = new esm.Transaction();
+  PF.addInput({ sourceTXID: "f5".repeat(32), sourceOutputIndex: 0, unlockingScript: esm.UnlockingScript.fromHex("51"), sequence: 0xffffffff });
+  for (let i = 0; i < 4; i++) PF.addOutput({ lockingScript: payHold, satoshis: 50_000 });
+  const hP = mineAlone(dP);
+  pushHeader();
+  const hPF = mineAlone(PF as never, esm.MerklePath);
+  pushHeader();
+  check(!!(await until("swap's chain at the payer's funding", async () => { const t = await (await r.hydrate(SWAP)).kernel.chainTip(); return t && t.height >= hPF ? t : undefined; })), `P's deploy mined at ${hP}, the payer's funding at ${hPF}`);
+  // The payer's wallet: its keys (keyWallet), and a createAction that pays AuthFetch's one output from the next funding coin.
+  const payments: string[] = [];
+  const payerBase = keyWallet(payer);
+  const payingWallet = new Proxy(payerBase, {
+    get(t, p) {
+      if (p === "createAction") return async (args: { outputs: Array<{ satoshis: number; lockingScript: string }> }) => {
+        const out = args.outputs[0]!;
+        const tx = new esm.Transaction();
+        tx.addInput({ sourceTransaction: PF, sourceOutputIndex: payments.length, unlockingScriptTemplate: new esm.P2PKH().unlock(payer) });
+        tx.addOutput({ lockingScript: esm.LockingScript.fromHex(out.lockingScript), satoshis: out.satoshis });
+        tx.addOutput({ lockingScript: payHold, satoshis: 50_000 - out.satoshis });
+        await tx.sign();
+        payments.push(tx.id("hex"));
+        return { txid: tx.id("hex"), tx: tx.toAtomicBEEF() };
+      };
+      return Reflect.get(t, p);
+    },
+  }) as typeof payerBase;
+  const payFetch = new esm.AuthFetch(payingWallet as never);
+  const enableUrl = (id: string) => `${R}/amm/enable?tokenId=${id}`;
+  const postBeef = (beef: number[]) => ({ method: "POST", headers: { "content-type": "application/octet-stream" }, body: Uint8Array.from(beef) });
+  const answer = async (res: Response) => ({ status: res.status, body: await res.json().catch(() => ({})) as Record<string, unknown> });
+  const enableRow = async () => (await (await r.hydrate(SWAP)).kernel.dispatch()).rows.find((x) => x.transport === "http" && x.address === "/amm/enable") as Record<string, unknown> | undefined;
+  {
+    const row = await enableRow();
+    const fs = (row?.filters as string[] | undefined)?.join(",");
+    check(fs === "kernel.brc104,kernel.beef,amm.enable-check,kernel.pay" && row?.price === undefined, `swap's route POST /amm/enable: filters ${fs}, no price (the paid enable off)`);
+  }
+  // No price: refused by enable-check, before kernel.pay asks for money.
+  const off0 = await answer(await payFetch.fetch(enableUrl(P), postBeef(dP.toAtomicBEEF())));
+  check(off0.status === 403 && off0.body.code === "ERR_PAID_ENABLE_OFF" && payments.length === 0, `no price: 403 ${String(off0.body.code)} (${String(off0.body.description)}), nothing paid`);
+  // The admin's price → the record, the event, the host sets the route's price (as owner).
+  await send({ fn: "price", args: { sats: 2000 } });
+  const priced = await until("/amm/defaults enablePriceSats 2000", async () => (await getJson(`/@${SWAP}/amm/defaults`) as { enablePriceSats?: number })?.enablePriceSats === 2000 ? true : undefined);
+  await x.exchange.idle();
+  const rowPriced = await until("the route's price", async () => (await enableRow())?.price === 2000 ? true : undefined);
+  check(!!priced && !!rowPriced && lines.some((l) => l.includes("enable-price: /amm/enable priced at 2000 sats")), "the admin's price {sats: 2000}: /amm/defaults enablePriceSats 2000; the host set the route's price 2000 (root's dispatch)");
+  // Unpaid: 402 with the price (a stock client that hands the 402 back instead of paying it).
+  const unpaid = new esm.AuthFetch(keyWallet(payer) as never);
+  (unpaid as unknown as { handlePaymentAndRetry: (u: string, c: unknown, res: Response) => Promise<Response> }).handlePaymentAndRetry = async (_u, _c, res) => res;
+  const ch = await unpaid.fetch(enableUrl(P), postBeef(dP.toAtomicBEEF()));
+  check(ch.status === 402 && ch.headers.get("x-bsv-payment-satoshis-required") === "2000" && !!ch.headers.get("x-bsv-payment-derivation-prefix"), `unpaid: 402, x-bsv-payment-satoshis-required ${ch.headers.get("x-bsv-payment-satoshis-required")}`);
+  // A BEEF not the token's deploy: 400 before payment.
+  const bad = await answer(await payFetch.fetch(enableUrl(`${"ab".repeat(32)}_0`), postBeef(dP.toAtomicBEEF())));
+  check(bad.status === 400 && bad.body.code === "ERR_BAD_DEPLOY" && payments.length === 0, `a BEEF that is not the token's deploy: 400 ${String(bad.body.code)}, nothing paid`);
+  // Paid: the stock AuthFetch pays the 402 and resends.
+  const t2 = Date.now();
+  const ok = await answer(await payFetch.fetch(enableUrl(P), postBeef(dP.toAtomicBEEF())));
+  const res = ok.body.result as Record<string, unknown> | undefined;
+  check(ok.status === 200 && payments.length === 1 && res?.tokenId === P && res.status === "enabled" && res.paidBy === PAYER && res.paymentTxid === payments[0] && res.satoshisPaid === 2000 && !("deploy" in res), `paid: 200, P enabled, the row keeps the payment (paidBy the payer, its txid, 2000 sats) (${JSON.stringify(res)?.slice(0, 220)})`);
+  const upP = await until("/@P/amm/token", async () => { const t = await get(`/@${P}/amm/token`); return t.status === 200 ? t : undefined; }, 60_000);
+  await x.exchange.idle();
+  keep(x, P);
+  check(!!upP && (await rootOf(x, P)).join() === SHARED, `the host reacted to token-enabled: P's instance up, owned by the host's key (${Date.now() - t2} ms)`);
+  const kP = (await r.hydrate(P)).kernel;
+  const termsP = await until("P's amm/terms", async () => { const c = await kP.call("head", "amm/terms"); return c ? await kP.store.get(c as never) as Record<string, unknown> : undefined; });
+  check(!!termsP && termsP.commissionBps === 25 && termsP.minLegSats === 1000, `…with the default terms (amm/terms ${JSON.stringify(termsP)})`);
+  const listedP = (await getJson(`/@${SWAP}/amm/tokens`) as Array<Record<string, unknown>>).find((t) => t.tokenId === P);
+  check(listedP?.status === "enabled" && listedP.paidBy === PAYER && listedP.satoshisPaid === 2000, `/amm/tokens: P enabled, paidBy and satoshisPaid on its row`);
+  // Again: refused by enable-check before payment.
+  const again2 = await answer(await payFetch.fetch(enableUrl(P), postBeef(dP.toAtomicBEEF())));
+  check(again2.status === 409 && again2.body.code === "ERR_TOKEN_ENABLED" && payments.length === 1, `a second paid enable of P: 409 ${String(again2.body.code)}, nothing paid`);
+  // The coin in swap's wallet: GET /amm/wallet.
+  const wal = await until("swap's wallet holds the payment", async () => { const v = await getJson("/amm/wallet") as { sats?: number; outputs?: number } | undefined; return v?.sats === 2000 ? v : undefined; });
+  check(wal?.sats === 2000 && wal.outputs === 1, `GET /amm/wallet: ${JSON.stringify(wal ?? await get("/amm/wallet"))} (the payment, internalized by swap's wallet before the handler)`);
+  // Disabled by the admin: the paid route refuses it (only the admin enables it again).
+  await send({ fn: "disable", args: { tokenId: P } });
+  await until("P stopped", async () => (await get(`/@${P}/amm/token`)).status === 404 ? true : undefined);
+  await x.exchange.idle();
+  const dis = await answer(await payFetch.fetch(enableUrl(P), postBeef(dP.toAtomicBEEF())));
+  check(dis.status === 409 && dis.body.code === "ERR_TOKEN_DISABLED" && payments.length === 1, `P disabled by the admin, then a paid enable: 409 ${String(dis.body.code)}, nothing paid`);
+
   // ------------------------------------------------ discovery on / off
   await send({ fn: "discovery", args: { on: true } });
   const dOn = await until("discovery started", async () => (await get(`/@${DISCOVERY}/1color/listTopicManagers`)).status === 200 ? true : undefined);
@@ -709,6 +806,7 @@ try {
   const created1 = lines.filter((l) => /created \S+ .* from the/.test(l)).length;
   check(rows0 === rows1 && created0 === created1, `restart: reconcile created nothing; the table as swap says (${rows1})`);
   check((await get(`/@${A}/amm/token`)).status === 200 && (await get(`/@${DISCOVERY}/1color/listTopicManagers`)).status === 200, "restart: A and discovery serve");
+  check(((await (await x.host.router.hydrate(SWAP)).kernel.dispatch()).rows.find((y) => y.address === "/amm/enable") as Record<string, unknown> | undefined)?.price === 2000, "restart: the /amm/enable route keeps its price 2000");
   // swap says A disabled → the restart stops it (the host table follows swap, not its own last state).
   await send({ fn: "disable", args: { tokenId: A } });
   await until("A stopped", async () => (await get(`/@${A}/amm/token`)).status === 404 ? true : undefined);
@@ -737,6 +835,7 @@ try {
   const ver = async () => { const l = await x!.host.router.hydrate(SWAP); const c = await l.kernel.call("head", "amm/app"); return c ? (await l.kernel.store.get(c as never) as { version?: string }).version : undefined; };
   check(lines.some((l) => l.includes(`swap: pages updated to ${bumped} (from ${swapAppVersion()}`)) && await ver() === bumped, `restart with a packaged swap app ${bumped}: installed into swap as root (amm/app ${await ver()})`);
   check((await get("/accept.txt")).text === "the bumped package\n", "…its pages served (GET /accept.txt at the bare host)");
+  check(((await (await x.host.router.hydrate(SWAP)).kernel.dispatch()).rows.find((y) => y.address === "/amm/enable") as Record<string, unknown> | undefined)?.price === 2000 && lines.filter((l) => l.includes("enable-price: /amm/enable priced at 2000 sats")).length >= 2, "…the reinstall wrote /amm/enable unpriced; the host replayed the admin's price onto it (2000)");
   {
     const o = await get("/api/openapi.json");
     const doc = o.status === 200 ? JSON.parse(o.text) as { openapi?: string; paths?: Record<string, unknown> } : undefined;

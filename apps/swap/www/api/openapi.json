@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Open Exchange public read API",
-    "version": "0.14.0",
+    "version": "0.15.0",
     "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/…`. Each operation carries `x-cache` (its class) and `x-answered-by`."
   },
   "servers": [
@@ -2381,7 +2381,7 @@
       "get": {
         "operationId": "P17d",
         "summary": "Defaults for new token instances",
-        "description": "`{terms?, market?}` (`{}` when none is set).",
+        "description": "`{terms?, market?, enablePriceSats}`; `enablePriceSats` (0.15.0) the price in sats to enable a token on `POST /amm/enable`, null when unset (the paid enable off).",
         "tags": [
           "host"
         ],
@@ -2415,6 +2415,12 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "enablePriceSats": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
                     }
                   }
                 },
@@ -2423,7 +2429,8 @@
                     "lpFeeBps": 35,
                     "validatorFeeBps": 10,
                     "commissionBps": 5
-                  }
+                  },
+                  "enablePriceSats": null
                 }
               }
             }
@@ -2522,6 +2529,188 @@
         "x-route": "P18b",
         "x-cache": "as the swap pages are served",
         "x-answered-by": "files in the swap app's www/"
+      }
+    },
+    "/amm/enable": {
+      "post": {
+        "operationId": "W1",
+        "summary": "Enable a token for a fee (the paid enable)",
+        "description": "Any signed sender (BRC-104) enables a token by paying the admin's price (`enablePriceSats` on `/amm/defaults`). The body is the token's deploy as an Atomic BEEF. Filters, in order, before anything is recorded: `kernel.brc104`, `kernel.beef` (the BEEF proven), the swap app's `enable-check` (refuses with no price, a token on the list, a BEEF not the token's deploy — before any payment), `kernel.pay`. Without `X-BSV-Payment`: 402 with `x-bsv-payment-version: 1.0`, `x-bsv-payment-satoshis-required: <price>`, `x-bsv-payment-derivation-prefix: <nonce>` (ts-stack's payment wire; the stock AuthFetch pays it and resends). The payment is internalized into swap's wallet before the handler; the handler enables the token as the admin's enable does (the default terms and market) and keeps `{paidBy, paymentTxid, satoshisPaid}` on its row. Payment refusals: 400 `ERR_MALFORMED_PAYMENT`, `ERR_INVALID_DERIVATION_PREFIX`, `ERR_INVALID_PAYMENT`; 409 `ERR_PAYMENT_REPLAYED`.",
+        "tags": [
+          "host"
+        ],
+        "parameters": [
+          {
+            "name": "tokenId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "`<txid>_<vout>`"
+          },
+          {
+            "name": "X-BSV-Payment",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "`{derivationPrefix, derivationSuffix, transaction: <Atomic BEEF, base64>}` (the resend after a 402)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              },
+              "description": "the token's deploy, an Atomic BEEF"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "fn": {
+                      "const": "enable"
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "tokenId": {
+                          "type": "string"
+                        },
+                        "topic": {
+                          "type": "string"
+                        },
+                        "sym": {
+                          "type": "string"
+                        },
+                        "dec": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "const": "enabled"
+                        },
+                        "since": {
+                          "type": "integer"
+                        },
+                        "paidBy": {
+                          "type": "string"
+                        },
+                        "paymentTxid": {
+                          "type": "string"
+                        },
+                        "satoshisPaid": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`ERR_BAD_REQUEST` (no tokenId), `ERR_BAD_DEPLOY` (the body is not the token's deploy), `ERR_BEEF` (the BEEF does not prove), or a payment refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "not signed (BRC-104)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "`ERR_PAYMENT_REQUIRED`, with the `x-bsv-payment-*` headers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ERR_PAID_ENABLE_OFF`: no price set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`ERR_TOKEN_ENABLED`, `ERR_TOKEN_DISABLED` (disabled by the admin: only the admin enables it again), or `ERR_PAYMENT_REPLAYED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-route": "W1",
+        "x-cache": "none",
+        "x-answered-by": "the swap app"
+      }
+    },
+    "/amm/wallet": {
+      "get": {
+        "operationId": "W2",
+        "summary": "The exchange's wallet",
+        "description": "swap's core wallet as its state stands (the host reads `wallet/state`; no step): the coins its builder spends — outputs in the basket `default` with protocol `wallet payment` or `wallet change`, less those its own actions spent. `sats` their total, `outputs` their count.",
+        "tags": [
+          "host"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sats": {
+                      "type": "integer"
+                    },
+                    "outputs": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "example": {
+                  "sats": 2000,
+                  "outputs": 1
+                }
+              }
+            }
+          }
+        },
+        "x-route": "W2",
+        "x-cache": "none (no Cache-Control header)",
+        "x-answered-by": "the host"
       }
     }
   },
