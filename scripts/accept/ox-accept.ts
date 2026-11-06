@@ -15,7 +15,7 @@
 //                          /amm/admin names it, the host grants it amm.admin; root stays [host]; /skeins?key=<admin>
 //                          does not list swap; a second claim by another key refused
 //   run                  → reconciled: swap's discovery is off, so discovery stopped
-//   root: defaults terms, then enable {tokenId, beef}   → the host reacts: the instance <id> born owned, its deploy
+//   root: defaults terms (0.14.0: with minLegSats), then enable {tokenId, beef}   → the host reacts: the instance <id> born owned, its deploy
 //                          event admitted (amm/token), the three names served, beats, the terms sent;
 //                          bare-host /lookup ls_color_<id> routed; /amm/tokens: enabled, no url
 //   disable              → stopped (404 at /@<id>); enable again (no BEEF), by root (the host's key) → started
@@ -23,11 +23,13 @@
 //                          (/@<id>/amm/terms follows; null = market only); a token not on the list refused
 //   discovery off / on   → stopped / started
 //   restart the host     → reconcile creates nothing and starts what swap says
-//   history (0.13.0)     → a second token B from the token app's own fixtures (src/fixtures/vectors.zig: its deploy,
-//                          a pool, a sats-in and a token-in Swap, the validator's Rescind; the host's key is the
-//                          fixtures' validator identity, so B's pool is listed under a beating validator): the
-//                          pools stream's `change` events deploy, swap (with its trade row), swap, rescind;
-//                          /@<B>/amm/trades, /candles, /stats; the host's /amm/stats and /amm/positions; B's holders
+//   history (0.13.0; 0.14.0) → a second token B from the token app's own fixtures (src/fixtures/vectors.zig: its deploy,
+//                          a pool, a sats-in and a token-in Swap, the LP's Close; the host's key is the fixtures'
+//                          validator identity, so B's pool is listed under a beating validator): the pool event feeds
+//                          /@<B>/amm/events and /amm/events send deploy, swap, swap, close (nothing on connect; A's
+//                          feed none); /@<B>/amm/pools/at, /pools/history, /trades, /candles (fill and market), /stats
+//                          (price over the listed pools); the host's /amm/stats, /amm/positions?pool=, /amm/spends;
+//                          B's holders
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -48,7 +50,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { DISCOVERY, SWAP } from "../../host/exchange.ts";
 import { load, OX_ROOT, skein, SWAP_APP_DIR, swapAppVersion } from "../../host/skein.ts";
 import { firstRun, main, settings, startExchange, type Env, type Running } from "../../host/cli.ts";
-import { mergeStats } from "../../host/pools.ts";
+import { changeBps, marketCandles, mergeStats, poolState } from "../../host/pools.ts";
+import { priceOf } from "@dcasegr/amm-engine";
 
 type Sdk = typeof import("@bsv/sdk");
 // @bsv/sdk as skein's own dependency (resolved from the skein package).
@@ -151,15 +154,16 @@ function poolScript(t: PoolTemplate, o: { assetId: Uint8Array; reserve: number; 
   const prefix = new LockingScript().writeBin(Array.from(o.assetId)).writeNumber(o.reserve).writeOpCode(0x6d).toBinary();
   return LockingScript.fromBinary([...prefix, ...code, 0x6a, ...state]);
 }
-/** An event stream's events: `got` the `pools` events' data, `changes` the `change` events' (0.13.0), as they come; `close` ends it. */
-function sseEvents(url: string) {
+/** A pool event feed's messages (0.14.0: `event: pool`, `data: {tokenId, …row}`), as they come; `other` any other event's; `close` ends it. */
+function poolFeed(url: string) {
   const ac = new AbortController();
-  const got: unknown[] = [];
-  const changes: Array<{ kind?: string; outpoint?: string; pool?: Record<string, unknown>; trade?: Record<string, unknown> }> = [];
-  let status = 0;
+  const got: Array<Record<string, unknown>> = [];
+  const other: string[] = [];
+  let status = 0, type = "";
   const done = (async () => {
     const res = await fetch(url, { headers: { accept: "text/event-stream" }, signal: ac.signal });
     status = res.status;
+    type = res.headers.get("content-type") ?? "";
     const reader = res.body!.getReader();
     let buf = "";
     for (;;) {
@@ -169,12 +173,11 @@ function sseEvents(url: string) {
       for (let i = buf.indexOf("\n\n"); i >= 0; i = buf.indexOf("\n\n")) {
         const ev = buf.slice(0, i); buf = buf.slice(i + 2);
         const data = /^data: (.*)$/m.exec(ev)?.[1];
-        if (/^event: pools$/m.test(ev) && data !== undefined) got.push(JSON.parse(data));
-        if (/^event: change$/m.test(ev) && data !== undefined) changes.push(JSON.parse(data));
+        if (/^event: pool$/m.test(ev) && data !== undefined) got.push(JSON.parse(data)); else other.push(ev);
       }
     }
   })().catch(() => {});
-  return { got, changes, status: () => status, close: () => { ac.abort(); return done; } };
+  return { got, other, status: () => status, type: () => type, close: () => { ac.abort(); return done; } };
 }
 
 // ---------------------------------------------------------------- the headers feed (SSE, hex), as SKEIN_HEADERS_URL
@@ -354,7 +357,7 @@ try {
   check(!!swapChain, `the host chain at ${swapChain?.height} (A's deploy mined at ${hA})`);
 
   // ------------------------------------------------ defaults, then enable A
-  await send({ fn: "defaults", args: { terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25 }, market: { minCommissionBps: 2 } } });
+  await send({ fn: "defaults", args: { terms: { lpFeeBps: 30, validatorFeeBps: 5, commissionBps: 25, minLegSats: 1000 }, market: { minCommissionBps: 2 } } });
   const df = await until("the defaults", async () => { const d = await getJson(`/@${SWAP}/amm/defaults`) as { terms?: unknown } | undefined; return d?.terms ? d : undefined; });
   check(!!df, `defaults set by root: ${JSON.stringify(df)}`);
   const t1 = Date.now();
@@ -372,7 +375,7 @@ try {
   check(!!lt && tmA in lt && !!ll && lsA in ll && ammA in ll, `A serves ${Object.keys(lt ?? {}).join(", ")} · ${Object.keys(ll ?? {}).join(", ")}`);
   const kA = (await r.hydrate(A)).kernel;
   const terms = await until("A's amm/terms", async () => { const c = await kA.call("head", "amm/terms"); return c ? await kA.store.get(c as never) as Record<string, unknown> : undefined; });
-  check(!!terms && JSON.stringify(terms).includes("25"), `A: the default terms sent as root's message (amm/terms ${JSON.stringify(terms)})`);
+  check(!!terms && JSON.stringify(terms).includes("25") && terms.minLegSats === 1000, `A: the default terms sent as root's message, minLegSats with them (0.14.0; amm/terms ${JSON.stringify(terms)})`);
   const market = await until("A's amm/market", async () => { const c = await kA.call("head", "amm/market"); return c ? await kA.store.get(c as never) as Record<string, unknown> : undefined; });
   check(!!market, `A: the default market sent (amm/market ${JSON.stringify(market)})`);
   const lk = await fetch(`${R}/lookup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ service: lsA, query: { type: "color-admission", version: 1, assetId: A, topic: tmA, outpoints: [`${dA.id("hex")}.0`] } }) });
@@ -428,12 +431,11 @@ try {
     return { status: r.status, text: await r.text() };
   };
   const p2 = `${R}/@${A}/amm/pools`;
-  const s2 = sseEvents(p2);
-  const first2 = await until("the first pools event", () => s2.got.length ? s2.got[0] : undefined, 15_000) as { market?: { minCommissionBps?: unknown }; pools?: unknown[] } | undefined;
-  check(s2.status() === 200 && !!first2 && Array.isArray(first2.pools) && first2.pools.length === 0, `GET /@<A>/amm/pools as an event stream: the first event, no pools yet (${JSON.stringify(first2)})`);
+  const s2 = await fetch(p2, { headers: { accept: "text/event-stream" } });
+  const first2 = await s2.json().catch(() => undefined) as { pools?: unknown[] } | undefined;
+  check(s2.status === 200 && /application\/json/.test(s2.headers.get("content-type") ?? "") && !!first2 && Array.isArray(first2.pools) && first2.pools.length === 0, `GET /@<A>/amm/pools asked for an event stream: the plain read (0.14.0: the pools route no longer streams; ${s2.headers.get("content-type")}), no pools yet`);
   const subT = await submitA(T);
   check(subT.status === 200, `T (A's deploy split in three) submitted to ${tmA.slice(0, 18)}… (${subT.status} ${subT.text.slice(0, 120)})`);
-  const tPools = Date.now();
   for (const [k, t] of pools.entries()) { const r = await submitA(t); check(r.status === 200, `pool P${k} submitted (${r.status} ${r.text.slice(0, 120)})`); }
   const listed = await until("ls_amm_A lists the three pools", async () => {
     const r = await fetch(`${R}/@${A}/amm/lookup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ service: ammA, query: { tokenId: A } }) });
@@ -448,12 +450,13 @@ try {
   check(b2.pools?.length === 1 && b2.pools[0]!.outpoint === p0, `…only P0: P1 (validator not beating) and P2 (commission 1 < the market's 2) absent (${JSON.stringify(b2.pools?.map((p) => p.outpoint))})`);
   const row0 = b2.pools?.[0];
   check(!!row0 && row0.validatorIdentityKey === SHARED && row0.validatorPeerId === (liveT?.[0] as { from?: string } | undefined)?.from && row0.lpPubKey === lps[0] && row0.commissionBps === 25, `…P0's row: validator ${String(row0?.validatorIdentityKey).slice(0, 8)}…, peer ${String(row0?.validatorPeerId).slice(0, 12)}…, lpPubKey ${row0?.lpPubKey === lps[0] ? "its LP key" : String(row0?.lpPubKey)} (${JSON.stringify(row0)})`);
+  check(!!row0 && row0.poolId === p0 && row0.swaps === 0, `…P0's pool id is its deploy outpoint, swaps 0 (0.14.0; poolId ${String(row0?.poolId)}, swaps ${String(row0?.swaps)})`);
   check(b2.market?.minCommissionBps === 2 && typeof b2.market.commissionPkh === "string", `…the market: ${JSON.stringify(b2.market)}`);
-  const vs = b2.validators ?? [];
+  const vs = (b2.validators ?? []) as Array<{ identity?: string; peerId?: string; minLegSats?: number }>;
   check(vs.some((v) => v.identity === SHARED && v.peerId === (liveT?.[0] as { from?: string } | undefined)?.from) && !vs.some((v) => v.identity === stranger.toPublicKey().toString()), `…validators: the beating one (the host key, its peer ID), not the stranger (${JSON.stringify(vs.map((v) => `${String(v.identity).slice(0, 8)}…/${String(v.peerId).slice(0, 12)}…`))})`);
-  const next2 = await until("a change event deploy P0", () => s2.changes.find((c) => c.kind === "deploy" && c.outpoint === p0), 30_000);
-  check(!!next2 && next2.pool?.outpoint === p0 && s2.got.length === 1, `…the stream sent one change, {kind: deploy, outpoint: P0, pool} (0.13.0, D7), not the whole answer again (${s2.changes.length} change events, ${s2.got.length} pools event; ${Date.now() - tPools} ms after the pools' submission began)`);
-  await s2.close();
+  // The beat carries the terms once the instance re-declares its beacons with them (a beat on the host's timer).
+  const vMin = await until("A's validator with its minLegSats", async () => ((await getJson(`/@${A}/amm/pools`) as { validators?: Array<{ identity?: string; minLegSats?: number }> } | undefined)?.validators ?? []).find((v) => v.identity === SHARED && v.minLegSats === 1000), 180_000);
+  check(!!vMin, `…the beating validator's minLegSats from its beat's terms (0.14.0): ${JSON.stringify(vMin)}`);
   const g1 = await fetch(`${R}/amm/pools`);
   const b1 = await g1.json().catch(() => undefined) as Array<Record<string, unknown>> | undefined;
   check(g1.status === 200 && b1?.length === 1 && b1[0]!.tokenId === A && b1[0]!.outpoint === p0 && g1.headers.get("cache-control") === "public, max-age=5", `GET /amm/pools (the bare host: swap): every enabled token's, each row with its tokenId (${JSON.stringify(b1?.map((p) => `${String(p.tokenId).slice(0, 8)}… ${String(p.outpoint).slice(0, 8)}…`))})`);
@@ -465,16 +468,22 @@ try {
   const ownA = await (x!.pools as unknown as { instanceStats(h: string): Promise<Record<string, unknown>> }).instanceStats(A);
   check(ownA.pools === 3 && ownA.tvlSats === 3 * 50_001 && ownA.lastTradeAt === null, `A's instance /stats, unfiltered: 3 pools, tvlSats ${String(ownA.tvlSats)} (${JSON.stringify(ownA)})`);
   const stA0 = await getJson(`/@${A}/amm/stats`) as Record<string, unknown> | undefined;
+  const midA0 = priceOf([poolState(row0 as Record<string, unknown>)])?.mid;
   const pA0 = stA0?.price as { sats?: number; tokens?: number } | null | undefined;
-  check(stA0?.pools === 1 && stA0.tvlSats === 50_001 && stA0.tvlTokens === 7_000_000 && pA0?.sats === 50_001 && pA0?.tokens === 7_000_000, `GET /@<A>/amm/stats (the host's): only P0 counted — pools 1, tvl 50001 sats / 7000000, no trade so price = P0's reserves (${JSON.stringify(stA0)})`);
-  // mergeStats alone (P0..P2 above have equal reserves, so the no-trade price cannot tell the lists apart there):
-  // the deepest LISTED pool prices a token with no trade; a trade's price passes through; no listed pool, no price.
-  const fp = (sats: number, tokens: number) => ({ outpoint: "x_0", bsvReserve: sats, tokenReserve: tokens, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 25, validatorIdentityKey: SHARED, validatorPeerId: "p" });
-  const own = { tokenId: A, price: { sats: 900, tokens: 1 }, lastTradeAt: null, tvlSats: 1900, tvlTokens: 12, pools: 3 };
-  const m1 = mergeStats(own, [fp(300, 5), fp(700, 6)]);
-  const m2 = mergeStats({ ...own, lastTradeAt: 5, price: { sats: 2, tokens: 3 } }, [fp(300, 5)]);
-  const m3 = mergeStats(own, []);
-  check(JSON.stringify(m1.price) === '{"sats":700,"tokens":6}' && m1.tvlSats === 1000 && m1.tvlTokens === 11 && m1.pools === 2 && JSON.stringify(m2.price) === '{"sats":2,"tokens":3}' && m2.pools === 1 && m3.price === null && m3.pools === 0 && m3.tvlSats === 0, `mergeStats: no trade → the deepest listed pool's price; a trade's price kept; none listed → null (${JSON.stringify([m1.price, m2.price, m3.price])})`);
+  check(stA0?.pools === 1 && stA0.tvlSats === 50_001 && stA0.tvlTokens === 7_000_000 && !!midA0 && pA0?.sats === Number(midA0.sats) && pA0?.tokens === Number(midA0.tokens) && !!stA0.buyPrice && !!stA0.sellPrice && stA0.lastTradePrice === null && stA0.change1h === null && stA0.change24h === null,
+    `GET /@<A>/amm/stats (the host's): only P0 counted — pools 1, tvl 50001 sats / 7000000; price = priceOf([P0]).mid, buy and sell set; no trade, no pools an hour ago: lastTradePrice and the changes null (${JSON.stringify(stA0)})`);
+  // mergeStats and changeBps alone: the price over the LISTED pools; none listed, no price; the change from a past mid.
+  const fp = (sats: number, tokens: number) => ({ poolId: "x_0", outpoint: "x_0", bsvReserve: sats, tokenReserve: tokens, liquidityFeeBps: 30, validationFeeBps: 5, commissionBps: 25, validatorIdentityKey: SHARED, validatorPeerId: "p", swaps: 0 });
+  const own = { tokenId: A, lastTradePrice: null, lastTradeAt: null, tvlSats: 1900, tvlTokens: 12, pools: 3 };
+  const two = [fp(3_000_000, 50_000_000), fp(7_000_000, 60_000_000)];
+  const m1 = mergeStats(own, two, null, null);
+  const want1 = priceOf(two.map((p) => poolState(p)))!;
+  const m3 = mergeStats(own, [], { sats: 1n, tokens: 1n }, null);
+  const then = { sats: want1.mid.sats * 9n, tokens: want1.mid.tokens * 10n };
+  const m4 = mergeStats(own, two, then, then);
+  check(JSON.stringify(m1.price, (_k, v) => typeof v === "bigint" ? v.toString() : v) === JSON.stringify({ sats: want1.mid.sats.toString(), tokens: want1.mid.tokens.toString() }) && m1.tvlSats === 10_000_000n && m1.tvlTokens === 110_000_000n && m1.pools === 2 && m1.change1h === null
+    && m3.price === null && m3.buyPrice === null && m3.sellPrice === null && m3.change1h === null && m3.pools === 0 && m3.tvlSats === 0n && m4.change1h === 1111n && m4.change24h === 1111n && changeBps({ sats: 2n, tokens: 1n }, { sats: 1n, tokens: 1n }) === -5000n,
+    `mergeStats: price = priceOf(listed).mid; none listed → null; the change from a past mid in bps, truncated (${String(m4.change1h)}); changeBps 2→1 = ${String(changeBps({ sats: 2n, tokens: 1n }, { sats: 1n, tokens: 1n }))}`);
   const allA0 = (await getJson("/amm/stats") as Array<Record<string, unknown>> | undefined)?.find((y) => y.tokenId === A);
   check(!!allA0 && allA0.pools === 1 && allA0.tvlSats === 50_001, `GET /amm/stats: A's row the same (pools ${String(allA0?.pools)}, tvlSats ${String(allA0?.tvlSats)})`);
 
@@ -482,7 +491,7 @@ try {
   const fixturesZig = await (async () => { const st = sk.stores.openStoreFile(sk.indexStore.storeSpec(x!.db.get(A)!), { readOnly: true }); try { return new TextDecoder().decode(await tree.readFile(st as never, appRec.tree, "src/fixtures/vectors.zig")); } finally { st.close(); } })();
   const fx = (name: string) => Transaction.fromHex(new RegExp(`pub const ${name} = "([0-9a-f]+)"`).exec(fixturesZig)![1]!);
   const fxLp = /pub const lp = "([0-9a-f]+)"/.exec(fixturesZig)![1]!;
-  const order = ["fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "rescind"];
+  const order = ["fund", "token_deploy", "pool_deploy", "swap_bsv_in", "swap_tokens_in", "close"];
   const ftx = new Map(order.map((n) => [n, fx(n)]));
   const byId = new Map([...ftx.values()].map((t) => [t.id("hex"), t]));
   let topH = 0;
@@ -501,51 +510,83 @@ try {
   keep(x, B);
   const beatsB = await until("B's validator beating", async () => { const v = await getJson(`/@${B}/amm/pools`) as { validators?: Array<{ identity?: string }> } | undefined; return v?.validators?.some((y) => y.identity === SHARED) ? v : undefined; }, 60_000);
   check(!!beatsB, "B's pools route names this host as a beating validator (the fixtures' identity)");
-  const sB = sseEvents(`${R}/@${B}/amm/pools`);
-  check(!!(await until("B's first pools event", () => sB.got[0], 15_000)), "B's pools stream: the first event pools");
+  // 0.14.0: the pool event feeds — B's and the origin's — open before B's pool history begins; A's sees none of it.
+  const fB = poolFeed(`${R}/@${B}/amm/events`), fAll = poolFeed(`${R}/amm/events`), fA = poolFeed(`${R}/@${A}/amm/events`);
+  check(!!(await until("the feeds connected", () => fB.status() && fAll.status() && fA.status() ? true : undefined, 15_000)) && fB.status() === 200 && /text\/event-stream/.test(fB.type()) && fAll.status() === 200 && /text\/event-stream/.test(fAll.type()), `GET /@<B>/amm/events and /amm/events: event streams (${fB.status()} ${fB.type()}, ${fAll.status()} ${fAll.type()})`);
+  await sleep(1000);
+  check(fB.got.length === 0 && fB.other.length === 0 && fAll.got.length === 0 && fAll.other.length === 0, "…nothing sent on connect (no replay)");
   const submitB = async (n: string) => {
     const r = await fetch(`${R}/submit`, { method: "POST", headers: { "content-type": "application/octet-stream", "x-topics": JSON.stringify([tmB]) }, body: Uint8Array.from(ftx.get(n)!.toBEEF()) });
     return { status: r.status, text: await r.text() };
   };
   const opOf = (n: string) => `${ftx.get(n)!.id("hex")}_0`;
-  const expectChange = async (n: string, kind: string, outpoint: string) => {
+  const poolB = opOf("pool_deploy");
+  const expectEvent = async (n: string, kind: string, k: number) => {
     const sub = await submitB(n);
-    const c = await until(`B's change ${kind} ${outpoint.slice(0, 8)}`, () => sB.changes.find((y) => y.kind === kind && y.outpoint === outpoint), 30_000);
-    check(sub.status === 200 && !!c, `${n} submitted to ${tmB.slice(0, 18)}… (${sub.status} ${sub.text.slice(0, 80)}): change {kind: ${kind}, outpoint ${outpoint.slice(0, 8)}…} (${JSON.stringify(c)?.slice(0, 160)})`);
-    return c;
+    const e = await until(`B's pool event ${kind} (${n})`, () => fB.got.length > k && fAll.got.length > k ? fB.got[k] : undefined, 30_000);
+    const same = !!e && JSON.stringify(e) === JSON.stringify(fAll.got[k]);
+    check(sub.status === 200 && e?.kind === kind && e.tokenId === B && e.poolId === poolB && e.txid === ftx.get(n)!.id("hex") && same, `${n} submitted to ${tmB.slice(0, 18)}… (${sub.status} ${sub.text.slice(0, 80)}): both feeds sent event pool {tokenId B, kind ${kind}, poolId the deploy's outpoint, txid} (${JSON.stringify(e)?.slice(0, 200)})`);
+    return e;
   };
-  const cDeploy = await expectChange("pool_deploy", "deploy", opOf("pool_deploy"));
-  check(cDeploy?.pool?.outpoint === opOf("pool_deploy") && cDeploy.trade === undefined, "…deploy carries the pool row, no trade");
-  const cBuy = await expectChange("swap_bsv_in", "swap", opOf("swap_bsv_in"));
-  check(cBuy?.pool?.outpoint === opOf("swap_bsv_in") && cBuy.trade?.txid === ftx.get("swap_bsv_in")!.id("hex") && cBuy.trade?.side === "buy" && cBuy.trade?.amountIn === 20000 && cBuy.trade?.lpPubKey === fxLp, `…swap carries the continuation's row and its trade row (side ${String(cBuy?.trade?.side)}, amountIn ${String(cBuy?.trade?.amountIn)}, amountOut ${String(cBuy?.trade?.amountOut)})`);
-  const cSell = await expectChange("swap_tokens_in", "swap", opOf("swap_tokens_in"));
-  check(cSell?.trade?.side === "sell" && cSell.trade?.amountIn === 50000, `…the token-in swap: a sell (${JSON.stringify(cSell?.trade)?.slice(0, 120)})`);
-  check(!sB.changes.some((y) => y.kind === "close"), "…a swap's spent pool is no close (its LP key's continuation came in)");
-  const cRescind = await expectChange("rescind", "rescind", opOf("swap_tokens_in"));
-  check(!!cRescind && cRescind.pool === undefined, "…the validator's Rescind: change {kind: rescind} on the rescinded pool's outpoint (the lookup delists it; /positions says rescinded)");
-  check(sB.got.length === 1, `…B's stream sent the whole answer once only (${sB.got.length} pools events, ${sB.changes.length} changes)`);
-  await sB.close();
+  const eDeploy = await expectEvent("pool_deploy", "deploy", 0);
+  check(eDeploy?.outpoint === poolB && eDeploy.swaps === 0 && typeof eDeploy.at === "number", `…deploy: outpoint ${String(eDeploy?.outpoint).slice(0, 8)}…, swaps 0, at`);
+  const eBuy = await expectEvent("swap_bsv_in", "swap", 1);
+  check(eBuy?.outpoint === opOf("swap_bsv_in") && eBuy.swaps === 1 && eBuy.side === "buy" && eBuy.amountIn === 20000 && eBuy.lpPubKey === fxLp && typeof eBuy.payoutPkh === "string", `…swap: the continuation's outpoint, swaps 1, side buy, amountIn ${String(eBuy?.amountIn)}, its payoutPkh`);
+  const eSell = await expectEvent("swap_tokens_in", "swap", 2);
+  check(eSell?.swaps === 2 && eSell.side === "sell" && eSell.amountIn === 50000, `…the token-in swap: a sell, swaps 2 (${JSON.stringify(eSell)?.slice(0, 120)})`);
+  const eClose = await expectEvent("close", "close", 3);
+  check(!!eClose && eClose.poolId === poolB, "…the LP's Close: kind close on the pool's id");
+  check(fA.got.length === 0, `…A's feed sent none of B's (${fA.got.length})`);
+  check(fB.got.length === 4 && fAll.got.length === 4, `…four events each, nothing else (${fB.got.length}, ${fAll.got.length})`);
+  await Promise.all([fB.close(), fAll.close(), fA.close()]);
+  // STOPPED (Builder 3, 0.14.0): a swap with token change in this lineage — the fixtures' swap_token_change competes
+  // with swap_tokens_in, the only parent of close; no fixture spends a token-change swap's pool.
+
+  // the pool history reads at the times the events carry
+  const [atD, atBuy, atSell, atClose] = [eDeploy, eBuy, eSell, eClose].map((e) => Number(e?.at));
+  const at = async (t: number) => await getJson(`/@${B}/amm/pools/at?t=${t}`) as Array<Record<string, unknown>> | undefined;
+  const before = await at(atD - 1), afterBuy = await at(atBuy), afterClose = await at(atClose);
+  check(before?.length === 0 && afterBuy?.length === 1 && afterBuy[0]!.poolId === poolB && afterBuy[0]!.outpoint === opOf("swap_bsv_in") && afterBuy[0]!.swaps === 1 && afterClose?.length === 0, `GET /@<B>/amm/pools/at: none before the deploy, the bsv-in swap's state at its time, none at the close (${JSON.stringify(afterBuy)?.slice(0, 160)})`);
+  const hist = await getJson(`/@${B}/amm/pools/history?from=0`) as { events?: Array<Record<string, unknown>>; next?: unknown } | undefined;
+  check(hist?.events?.map((e) => e.kind).join() === "deploy,swap,swap,close" && hist.next === null, `GET /@<B>/amm/pools/history: deploy, swap, swap, close, next null (${hist?.events?.map((e) => e.kind).join()})`);
+  const page1 = await getJson(`/@${B}/amm/pools/history?from=0&limit=1`) as { events?: unknown[]; next?: string } | undefined;
+  const page2 = page1?.next ? await getJson(`/@${B}/amm/pools/history?from=0&limit=3&after=${page1.next}`) as { events?: Array<Record<string, unknown>>; next?: unknown } | undefined : undefined;
+  check(page1?.events?.length === 1 && typeof page1.next === "string" && page2?.events?.map((e) => e.kind).join() === "swap,swap,close" && page2.next === null, "…?limit=1 then ?after=<next>: the rest of the window, once each");
 
   const tr = await fetch(`${R}/@${B}/amm/trades`);
   const trj = await tr.json().catch(() => ({})) as { trades?: Array<Record<string, unknown>>; next?: unknown };
-  check(tr.status === 200 && tr.headers.get("cache-control") === "public, max-age=5" && trj.trades?.length === 2 && trj.trades[0]!.side === "sell" && trj.trades[1]!.side === "buy" && trj.next === null, `GET /@<B>/amm/trades: two rows, newest first (${trj.trades?.map((t) => t.side).join(", ")}), next null`);
+  check(tr.status === 200 && tr.headers.get("cache-control") === "public, max-age=5" && trj.trades?.length === 2 && trj.trades[0]!.side === "sell" && trj.trades[1]!.side === "buy" && trj.next === null && trj.trades.every((t) => t.poolId === poolB), `GET /@<B>/amm/trades: two rows, newest first (${trj.trades?.map((t) => t.side).join(", ")}), each with the pool id, next null`);
   check(!!trj.trades && trj.trades.every((t) => "height" in t && t.height === null && typeof t.at === "number" && typeof t.feeLp === "number"), "…each row with `at`, the fees, and `height` null (unmined)");
   const one = await getJson(`/@${B}/amm/trades?txid=${ftx.get("swap_bsv_in")!.id("hex")}`) as Record<string, unknown> | undefined;
   check(one?.side === "buy" && (await get(`/@${B}/amm/trades?txid=${ftx.get("pool_deploy")!.id("hex")}`)).status === 404, "…?txid= the one row; a deploy's txid 404");
-  check(((await getJson(`/@${B}/amm/trades?lp=${fxLp}&limit=1`)) as { trades?: unknown[]; next?: unknown })?.trades?.length === 1 && typeof ((await getJson(`/@${B}/amm/trades?lp=${fxLp}&limit=1`)) as { next?: unknown }).next === "string", "…?lp= the LP key's rows, a full page carries `next`");
+  { const pg = await getJson(`/@${B}/amm/trades?pool=${poolB}&limit=1`) as { trades?: unknown[]; next?: unknown } | undefined; check(pg?.trades?.length === 1 && typeof pg.next === "string", "…?pool= the pool's rows, a full page carries `next`"); }
   const now = Date.now();
-  const cs = await getJson(`/@${B}/amm/candles?tf=1m&from=${now - 3_600_000}&to=${now + 60_000}`) as Array<{ t?: number; n?: number; o?: { sats?: number; tokens?: number } }> | undefined;
-  check(!!cs && cs.length >= 1 && cs.reduce((k, c) => k + (c.n ?? 0), 0) === 2 && typeof cs[0]!.o?.sats === "number", `GET /@<B>/amm/candles?tf=1m: ${cs?.length} non-empty bucket(s), 2 trades (${JSON.stringify(cs)?.slice(0, 160)})`);
+  const win = `tf=1m&from=${now - 3_600_000}&to=${now + 60_000}`;
+  const cs = await getJson(`/@${B}/amm/candles?${win}`) as Array<{ t?: number; n?: number; o?: { sats?: number; tokens?: number } }> | undefined;
+  check(!!cs && cs.length >= 1 && cs.reduce((k, c) => k + (c.n ?? 0), 0) === 2 && typeof cs[0]!.o?.sats === "number", `GET /@<B>/amm/candles?tf=1m (the fills, the instance's): ${cs?.length} non-empty bucket(s), 2 trades (${JSON.stringify(cs)?.slice(0, 160)})`);
+  check(JSON.stringify(await getJson(`/@${B}/amm/candles?series=fill&${win}`)) === JSON.stringify(cs), "…?series=fill: the same answer");
   check((await get(`/@${B}/amm/candles?tf=1m&from=0&to=${now}`)).status === 400, "…a window over 5000 buckets: 400");
+  const mk = await getJson(`/@${B}/amm/candles?series=market&${win}`) as Array<Record<string, unknown>> | undefined;
+  const mkWant = marketCandles([], hist?.events ?? [], 60_000);
+  const firstMid = priceOf([poolState(eDeploy!)])!.mid;
+  const big = (v: unknown) => BigInt(v as number);
+  check(!!mk && mk.length >= 1 && mk.reduce((k, c) => k + Number(c.n), 0) === 2 && mk.length === mkWant.length
+    && big((mk[0]!.o as { sats: number }).sats) * firstMid.tokens === firstMid.sats * big((mk[0]!.o as { tokens: number }).tokens)
+    && mk.reduce((k, c) => k + Number(c.volumeSats), 0) === Number(mkWant.reduce((k, c) => k + c.volumeSats, 0n)),
+    `GET /@<B>/amm/candles?series=market (the host's): ${mk?.length} bucket(s), n 2, o = the price after the deploy (priceOf([deploy]).mid), the swaps' volumes (${JSON.stringify(mk)?.slice(0, 200)})`);
+  check((await get(`/@${B}/amm/candles?series=market&tf=2m&from=0&to=1`)).status === 400 && (await get(`/@${B}/amm/candles?series=market&tf=1m&from=0&to=${now}`)).status === 400, "…market: a bad tf 400; a window over 5000 buckets 400");
   const stB = await getJson(`/@${B}/amm/stats`) as Record<string, unknown> | undefined;
-  check(stB?.tokenId === B && stB.buys24h === 1 && stB.sells24h === 1 && typeof stB.lastTradeAt === "number" && (stB.price as { sats?: number } | null)?.sats !== undefined && stB.pools === 0 && stB.change24h === null, `GET /@<B>/amm/stats: ${JSON.stringify(stB)}`);
+  check(stB?.tokenId === B && stB.buys24h === 1 && stB.sells24h === 1 && typeof stB.lastTradeAt === "number" && (stB.lastTradePrice as { sats?: number } | null)?.sats !== undefined && stB.pools === 0 && stB.price === null && stB.buyPrice === null && stB.sellPrice === null && stB.change24h === null, `GET /@<B>/amm/stats: closed, so no price; the last fill as lastTradePrice (${JSON.stringify(stB)})`);
   const stAll = await getJson("/amm/stats") as Array<{ tokenId?: string }> | undefined;
   check(!!stAll && stAll.some((y) => y.tokenId === A) && stAll.some((y) => y.tokenId === B), `GET /amm/stats: every enabled token's (${stAll?.map((y) => String(y.tokenId).slice(0, 8)).join(", ")})`);
   const stIds = await getJson(`/amm/stats?ids=${B}`) as Array<{ tokenId?: string }> | undefined;
   check(stIds?.length === 1 && stIds[0]!.tokenId === B, "…?ids= those tokens only");
-  const posAll = await getJson(`/amm/positions?lp=${fxLp}`) as Array<{ tokenId?: string; status?: string; swaps?: number }> | undefined;
+  const posAll = await getJson(`/amm/positions?pool=${poolB}`) as Array<{ tokenId?: string; poolId?: string; status?: string; swaps?: number }> | undefined;
   const posB = posAll?.find((y) => y.tokenId === B);
-  check(!!posAll && posAll.length === 2 && posB?.status === "rescinded" && posB.swaps === 2 && (await get("/amm/positions")).status === 400, `GET /amm/positions?lp=: every enabled token's rows with tokenId (B ${JSON.stringify(posB)}); no lp 400`);
+  check(!!posAll && posAll.length === 2 && posB?.poolId === poolB && posB.status === "closed" && posB.swaps === 2 && (await get("/amm/positions")).status === 400, `GET /amm/positions?pool=: every enabled token's rows with tokenId (B ${JSON.stringify(posB)}); no pool 400`);
+  const deployOp = `${ftx.get("pool_deploy")!.id("hex")}.0`, closeOp = `${ftx.get("close")!.id("hex")}.0`;
+  const sp = await getJson(`/amm/spends?outpoint=${deployOp},${closeOp}`) as Array<{ outpoint?: string; tokenId?: string; spentBy?: string }> | undefined;
+  check(sp?.length === 2 && sp[0]!.outpoint === deployOp && sp[0]!.tokenId === B && sp[0]!.spentBy === ftx.get("swap_bsv_in")!.id("hex") && sp[1]!.outpoint === closeOp && sp[1]!.spentBy === undefined && sp[1]!.tokenId === undefined && (await get("/amm/spends")).status === 400, `GET /amm/spends?outpoint=: the deploy's spender with its token, the close's output unspent; none 400 (${JSON.stringify(sp)})`);
   const hB = await getJson(`/@${B}/amm/color/${B}/holders`) as { count?: number; rows?: Array<{ address?: string; balance?: number }> } | undefined;
   check(!!hB && (hB.count ?? 0) >= 1 && hB.rows?.length === hB.count && hB.rows!.every((y, i) => i === 0 || (y.balance ?? 0) <= (hB.rows![i - 1]!.balance ?? 0)), `GET /@<B>/amm/color/<B>/holders: ${JSON.stringify(hB)?.slice(0, 200)}`);
 

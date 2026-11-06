@@ -12,7 +12,7 @@
 //       RocksDB/LMDB database: its set cannot be removed, so the handle cannot be created again).
 //       An instance there already: started if stopped, its deploy fed in if it has no token yet.
 //   token-disabled {tokenId}      the instance stopped (disabled; its libp2p node left). Not removed.
-//   token-terms {tokenId, terms}  (0.12.0) root's terms for one token: sent to its instance as root's
+//   token-terms {tokenId, terms}  (0.12.0; 0.14.0 terms may carry minLegSats) root's terms for one token: sent to its instance as root's
 //       `terms` message into amm/validator (`terms` a map, or null = market only), as at creation. No
 //       instance: logged, nothing else. Not replayed at start: the instance keeps its own amm/terms.
 //   discovery-on / discovery-off  the instance `discovery` (made on the first run) started / stopped.
@@ -42,7 +42,8 @@ export const tokenTopics = (id: string) => [`tm_color_${id}`, `ls_color_${id}`, 
 export const DISCOVERY_TOPICS = ["tm_color", "ls_color"];
 
 type Rec = Record<string, unknown>;
-type Terms = { lpFeeBps: number; validatorFeeBps: number; commissionBps: number };
+/** Root's terms as the swap app carries them (0.14.0: `minLegSats`, the validator's minimum leg in sats, optional), passed through untouched. */
+type Terms = { lpFeeBps: number; validatorFeeBps: number; commissionBps: number; minLegSats?: number };
 type Market = { minCommissionBps: number };
 
 export interface ExchangeOptions {
@@ -275,7 +276,7 @@ export class Exchange {
 
   /** Root's `terms` (a map, or null = market only) into the token instance's amm/validator, signed by the host's key; logged. */
   private async sendTerms(id: string, terms: Terms | null): Promise<void> {
-    await this.rootMessage(id, "amm/validator", { fn: "terms", args: terms }).then(() => this.say(`${id}: terms ${terms ? `${terms.lpFeeBps}/${terms.validatorFeeBps}/${terms.commissionBps}` : "null (market only)"} sent`), (e) => this.say(`${id}: terms not taken: ${(e as Error).message}`));
+    await this.rootMessage(id, "amm/validator", { fn: "terms", args: terms }).then(() => this.say(`${id}: terms ${terms ? `${terms.lpFeeBps}/${terms.validatorFeeBps}/${terms.commissionBps}${terms.minLegSats ? ` minimum leg ${terms.minLegSats} sats` : ""}` : "null (market only)"} sent`), (e) => this.say(`${id}: terms not taken: ${(e as Error).message}`));
   }
 
   /** Root's message to `handle` in `box`, signed by the host's key, through the front door (the control socket's `message` path); throws on a refusal. */

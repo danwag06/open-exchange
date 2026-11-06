@@ -20,7 +20,8 @@
     "accept": "node --experimental-strip-types --no-warnings scripts/accept/ox-accept.ts"
   },
   "dependencies": {
-    "@dcasegr/skein": "0.2.8"
+    "@dcasegr/skein": "0.2.8",
+    "@dcasegr/amm-engine": "0.40.2"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
