@@ -18,28 +18,36 @@
   ],
   "tags": [
     {
-      "name": "pools"
+      "name": "pools",
+      "description": "A token's live pools, its validator and market terms, and the pool event feeds."
     },
     {
-      "name": "history"
+      "name": "history",
+      "description": "Trades, candles, stats, positions, holders and the pools over time."
     },
     {
-      "name": "fees"
+      "name": "fees",
+      "description": "Pool positions and the fees owed to validators and commission holders."
     },
     {
-      "name": "chain"
+      "name": "chain",
+      "description": "Outpoint spends and transaction BEEFs from the chain state."
     },
     {
-      "name": "swaps"
+      "name": "swaps",
+      "description": "A swap leg, relayed by the host to its validator."
     },
     {
-      "name": "tokens"
+      "name": "tokens",
+      "description": "The instance's token, the exchange's token list and discovery's 1Color listings."
     },
     {
-      "name": "host"
+      "name": "host",
+      "description": "The instance card, the claimant, defaults, discovery, paid enable and the exchange's wallet."
     },
     {
-      "name": "docs"
+      "name": "docs",
+      "description": "This document and the reference page rendered from it."
     }
   ],
   "paths": {
@@ -1286,6 +1294,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "want ?id=<txid>: 64 hex characters"
                 }
               }
             }
@@ -1296,6 +1307,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "unknown transaction"
                 }
               }
             }
@@ -2211,6 +2225,10 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "message": "not found"
                 }
               }
             }
@@ -2268,6 +2286,10 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "message": "not found"
                 }
               }
             }
@@ -2558,6 +2580,26 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                },
+                "example": {
+                  "openapi": "3.1.0",
+                  "info": {
+                    "title": "Open Exchange public read API",
+                    "version": "0.18.0"
+                  },
+                  "servers": [
+                    {
+                      "url": "{origin}"
+                    }
+                  ],
+                  "paths": {
+                    "/amm/pools": {
+                      "get": {
+                        "operationId": "P1",
+                        "summary": "Every enabled token's live pools"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -2584,7 +2626,8 @@
               "text/html": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Open Exchange API</title>\n…"
               }
             }
           }
@@ -2702,6 +2745,20 @@
                         }
                       }
                     }
+                  }
+                },
+                "example": {
+                  "fn": "enable",
+                  "result": {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "topic": "tm_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "sym": "AMM2",
+                    "dec": 5,
+                    "status": "enabled",
+                    "since": 1793750400000,
+                    "paidBy": "02b7e3c1f0a95d4e8c6b2a17f3d9e05c4a8b6f2e1d3c7a9b5e0f4d2c8a6b1e3f70",
+                    "paymentTxid": "4c1e8a2f9b7d3e05a6c4b2d1f0e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1",
+                    "satoshisPaid": 1000
                   }
                 }
               }
@@ -2896,6 +2953,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "code": "ERR_BAD_REQUEST",
+                  "description": "want ?n=<the withdrawal's number, from 1>"
                 }
               }
             }
@@ -2906,6 +2968,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "code": "ERR_NOT_FOUND",
+                  "description": "no withdrawal 2"
                 }
               }
             }

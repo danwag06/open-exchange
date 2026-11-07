@@ -1,90 +1,39 @@
 <!doctype html>
+<!-- /api/, the reference page: ./openapi.json rendered by Scalar's API Reference (one pinned
+     script from the CDN; without it, the link below). The try-it console's {origin} defaults to
+     the origin that serves the page, so requests go to this exchange. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Open Exchange API</title>
 <style>
-  :root { --bg: #fff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e2e2e6; --code: #f4f4f6; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #151517; --fg: #ececf0; --muted: #9a9aa2; --line: #2c2c31; --code: #1f1f23; } }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
-  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 24px; margin: 0 0 8px; }
-  h2 { font-size: 17px; margin: 32px 0 8px; font-family: ui-monospace, monospace; word-break: break-all; }
-  h2 small { font-family: system-ui, sans-serif; color: var(--muted); font-weight: normal; }
-  p { margin: 0 0 8px; }
-  .muted { color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; margin: 8px 0; table-layout: fixed; }
-  th, td { text-align: left; vertical-align: top; border-top: 1px solid var(--line); padding: 6px 8px; }
-  th { width: 140px; color: var(--muted); font-weight: 500; }
-  code, pre { font-family: ui-monospace, monospace; font-size: 13px; background: var(--code); border-radius: 4px; }
-  code { padding: 1px 4px; }
-  pre { margin: 4px 0; padding: 8px; overflow-x: auto; white-space: pre; }
-  ul { margin: 0; padding-left: 18px; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; }
+  .darklight-reference a[href*="utm_source=powered-by"] { display: none; }
+  #fallback { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
 </style>
 </head>
 <body>
-<main>
-  <h1 id="title">Open Exchange API</h1>
-  <div id="intro" class="muted">Loading <a href="./openapi.json">openapi.json</a>…</div>
-  <div id="routes"></div>
-</main>
+<div id="app"></div>
+<p id="fallback">Open Exchange API: the reference viewer did not load. The spec is <a href="./openapi.json">openapi.json</a> (OpenAPI 3.1).</p>
+<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.77.0"></script>
 <script>
-(async function () {
-  const el = (tag, attrs, ...kids) => {
-    const e = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
-    for (const k of kids) if (k != null) e.append(k instanceof Node ? k : String(k));
-    return e;
-  };
-  // Inline `code` spans in a description.
-  const prose = (text) => {
-    const p = el("p");
-    String(text || "").split(/(`[^`]*`)/).forEach((s) => p.append(s.startsWith("`") && s.endsWith("`") && s.length > 1 ? el("code", {}, s.slice(1, -1)) : s));
-    return p;
-  };
-  let doc;
-  try { doc = await (await fetch("./openapi.json")).json(); } catch (e) {
-    document.getElementById("intro").textContent = "Could not load openapi.json: " + e.message;
-    return;
-  }
-  const resolve = (s) => {
-    for (let i = 0; s && s.$ref && i < 10; i++) s = s.$ref.split("/").slice(1).reduce((o, k) => o && o[k], doc);
-    return s || {};
-  };
-  const exampleOf = (media) => {
-    if (!media) return undefined;
-    if (media.example !== undefined) return media.example;
-    return resolve(media.schema).example;
-  };
-  document.title = doc.info.title;
-  document.getElementById("title").textContent = doc.info.title + " " + doc.info.version;
-  const intro = document.getElementById("intro");
-  intro.replaceChildren(prose(doc.info.description), el("p", {}, "Machine-readable: ", el("a", { href: "./openapi.json" }, "openapi.json"), " (OpenAPI " + doc.openapi + ")."));
-  const routes = document.getElementById("routes");
-  for (const [path, item] of Object.entries(doc.paths)) {
-    for (const [method, op] of Object.entries(item)) {
-      routes.append(el("h2", { id: op.operationId }, method.toUpperCase() + " " + path + " ", el("small", {}, op.operationId + " · " + op.summary)));
-      routes.append(prose(op.description));
-      const t = el("table");
-      const row = (k, v) => t.append(el("tr", {}, el("th", {}, k), el("td", {}, v)));
-      const params = (op.parameters || []).map((p) => el("li", {}, el("code", {}, p.name), " (" + p.in + (p.required ? ", required" : "") + ") ", p.description || ""));
-      row("Parameters", params.length ? el("ul", {}, ...params) : el("span", { class: "muted" }, "none"));
-      row("Cache", op["x-cache"] || "");
-      row("Answered by", op["x-answered-by"] || "");
-      const answers = el("div");
-      for (const [code, r] of Object.entries(op.responses || {})) {
-        const types = Object.keys(r.content || {});
-        answers.append(el("p", {}, el("code", {}, code), " " + (r.description || "") + (types.length ? " (" + types.join(", ") + ")" : "")));
-        for (const ty of types) {
-          const ex = exampleOf(r.content[ty]);
-          if (ex !== undefined) answers.append(el("pre", {}, typeof ex === "string" ? ex : JSON.stringify(ex, null, 2)));
-        }
-      }
-      row("Answers", answers);
-      routes.append(t);
-    }
-  }
+(function () {
+  if (!window.Scalar || !window.Scalar.createApiReference) return;
+  document.getElementById("fallback").hidden = true;
+  window.Scalar.createApiReference("#app", {
+    url: "./openapi.json",
+    metaData: { title: "Open Exchange API" },
+    darkMode: false,
+    hideDarkModeToggle: false,
+    servers: [{ url: "{origin}", variables: { origin: { default: location.origin, description: "The exchange's origin." } } }],
+    documentDownloadType: "json",
+    hideClientButton: true,
+    showDeveloperTools: "never",
+    agent: { disabled: true },
+    mcp: { disabled: true },
+    telemetry: false
+  });
 })();
 </script>
 </body>
