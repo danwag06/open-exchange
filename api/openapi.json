@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Open Exchange public read API",
-    "version": "0.17.3",
+    "version": "0.18.0",
     "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/…`. Each operation carries `x-cache` (its class) and `x-answered-by`."
   },
   "servers": [
@@ -1291,7 +1291,7 @@
       "post": {
         "operationId": "S1",
         "summary": "Relay a swap leg to its validator (the host is the relay)",
-        "description": "The open-exchange host relays one swap leg (0.17.0, skein-amm 0.44.0: the instance logs facts, never attempts; nothing about the attempt is recorded). Plain (no BRC-104 session, as /submit). The host checks ONE rule, the exchange's commission: when the pool's CommissionBps > 0 the Swap call's commissionPkh must be hash160 of the token instance's key for [1, \"amm commission\"], key id \"relay\", counterparty anyone (the market's `commissionPkh` on /pools and /terms); a swap that fails it is answered `commission_missing` and nothing is relayed. Everything else is the validator's. The host signs the validator's package with the token instance's key, carries it on one libp2p stream (one request frame, one answer frame) to `peerId` — or, when `peerId` is this host's own node, hands it in as that node's inbound frame — submits a `beef` the reply carries to the token instance's overlay (another node's) and answers the validator's reply as it is. Any break in the call (dial refused, protocol not served, write failed, stream closed without an answer) is answered `unreachable` at once. The client's request is the only timer: when it closes the host stops (a dial in progress cancelled, a request not yet written never written, an open stream closed); once written, the validator answers on its stream and a signed swap reaches the overlay regardless. No retries, no record, no status read.",
+        "description": "The open-exchange host relays one swap leg (0.17.0, skein-amm 0.44.0: the instance logs facts, never attempts; nothing about the attempt is recorded). Plain (no BRC-104 session, as /submit). The host checks ONE rule, the exchange's commission: when the pool's CommissionBps > 0 the Swap call's commissionPkh must be hash160 of the token instance's key for [1, \"amm commission\"], key id \"relay\", counterparty anyone (the market's `commissionPkh` on /pools and /terms); a swap that fails it is answered `commission_missing` and nothing is relayed. Everything else is the validator's. The host signs the validator's package with the token instance's key, carries it on one libp2p stream (one request frame, one answer frame) to `peerId` — or, when `peerId` is this host's own node, hands it in as that node's inbound frame — submits a `beef` the reply carries to the token instance's overlay (another node's) and answers the validator's reply as it is. Any break in the call (dial refused, protocol not served, write failed, stream closed without an answer) is answered `unreachable` at once. The client's request is the only timer: when it closes the host stops (a dial in progress cancelled, a request not yet written never written, an open stream closed); once written, the validator answers on its stream and a signed swap reaches the overlay regardless. No retries, no record, no status read. THE BEEF RULE (0.18.0, skein 0.3.3 / skein-amm 0.45.0): a transaction the token's topic admitted (the pool output's transaction, a swap whose change or payout the taker spends) goes by txid alone (a BEEF V2 txid-only entry) — the validator's instance holds it, and skein 0.3.3's door admits a txid-only entry for a transaction the instance holds; every other transaction (the taker's own funding) raw with its ancestry back to proven (its BUMPs). A txid-only entry the validator's instance does not hold is refused at its door (`UnknownTxidOnly`, answered `submit_refused`), nothing recorded.",
         "tags": [
           "host",
           "swaps"
@@ -3281,7 +3281,7 @@
         "properties": {
           "funding": {
             "type": "object",
-            "description": "the funding transaction's Atomic BEEF (every staged input's source with its ancestry)"
+            "description": "the funding transaction's Atomic BEEF: every staged input's source, raw with its ancestry back to proven when it is outside the token's topic, by txid alone (a txid-only entry) when the topic admitted it (0.18.0); the pool's transaction by txid"
           },
           "swap": {
             "type": "object",
@@ -3335,7 +3335,7 @@
           },
           "beef": {
             "type": "object",
-            "description": "accepted: what the validator submitted; pool_spent: the newest pool's transaction"
+            "description": "accepted: what the validator submitted (0.18.0: the signed swap, the taker's funding raw back to proven, what the topic admitted by txid); pool_spent: the newest pool's transaction, the same shape"
           }
         },
         "required": [

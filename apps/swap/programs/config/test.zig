@@ -229,7 +229,7 @@ test "the swap app's manifest: amm 0.5.0; the role admin gates configure (box am
     const a = arena.allocator();
     const m = try dagjson.decode(a, config_manifest);
     try testing.expectEqualStrings("amm", scbor.Value.str(m.get("name")).?);
-    try testing.expectEqualStrings("0.17.3", scbor.Value.str(m.get("version")).?);
+    try testing.expectEqualStrings("0.18.0", scbor.Value.str(m.get("version")).?);
     // 0.5.0: the kernel's gate judges a route's function, so the box amm/admin's route names one
     // (`configure`, every fn in that box) and the role admin gates it; root is not listed (root passes
     // anything); claim is listed in no role.

@@ -43,6 +43,9 @@
 //                          pool_spent with its continuation, the pools route at the new outpoint, its trade row; the
 //                          CROSS-HOST race (a relaying host of another key) → the same, the relaying host's overlay
 //                          holding the accepted swap when it answers; the validator's host stopped → unreachable at once
+//   five swaps in a row  → (0.18.0) on a host of its own: one taker, five swaps on one pool, each funded by the previous
+//                          swap's change; each leg's funding BEEF from the page's own code (skein-amm 0.45.0
+//                          `fundingBeef`): what the topic admitted by txid; every request and reply BEEF ≤ CHAIN_BOUND
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -77,6 +80,23 @@ const sk = await load();
 const { RawBox } = sk.raw;
 const { keyWallet } = await skein<typeof import("@dcasegr/skein/dist/wallet.js")>("src/wallet.ts");
 const { FakeArcade } = await skein<typeof import("@dcasegr/skein/dist/host/fake-arcade.js")>("src/host/fake-arcade.ts");
+/** 0.18.0: the largest request or reply BEEF the five-swap chain may carry (bytes): a swap alone is ~12.6 KB here. */
+const CHAIN_BOUND = 16_000;
+/** The page's own leg code (skein-amm 0.45.0's @dcasegr/amm-client: PoolTemplate, fundingBeef, topicAdmitted), when installed. */
+async function ammClient(): Promise<{ PoolTemplate: any; fundingBeef: any; topicAdmitted: any; sdk4: any } | undefined> {
+  try {
+    const entry = fileURLToPath(import.meta.resolve("@dcasegr/amm-client"));
+    const dist = dirname(entry);
+    const pool = await import(pathToFileURL(join(dist, "pool/index.js")).href);
+    const leg = await import(pathToFileURL(join(dist, "market/swapAction.js")).href);
+    // The client's own @bsv/sdk (its peer, ^4): its objects never mix with this script's sdk; bytes cross between them.
+    const cjs = createRequire(entry).resolve("@bsv/sdk");
+    const sdkPkg = JSON.parse(readFileSync(join(cjs.slice(0, cjs.lastIndexOf("/dist/")), "package.json"), "utf8")) as { version: string };
+    if (!/^4\./.test(sdkPkg.version)) return undefined;
+    const sdk4 = await import(pathToFileURL(join(dirname(cjs), "../esm/mod.js")).href);
+    return { PoolTemplate: pool.PoolTemplate, fundingBeef: leg.fundingBeef, topicAdmitted: leg.topicAdmitted, sdk4 };
+  } catch { return undefined; }
+}
 const ROCKS = process.env.SKEIN_EQUIV_STORE === "rocksdb";
 const FILE = process.env.SKEIN_EQUIV_STORE === "file";
 const BACKEND = ROCKS ? "rocksdb" : FILE ? "sqlite files, native serve" : "wasm";
@@ -676,7 +696,7 @@ try {
   // are built from the fixtures (swap_bsv_in's outputs and call, the commission rewritten to the relaying exchange's
   // pkh), each funded by its own output of one funding transaction (fund:1, the fixtures' taker key(0x1e)), its
   // preimage computed here. Each race on hosts of its own (the fixtures give one pool output to race on).
-  const raceHost = async (n: number, cross = false) => {
+  const raceHost = async (n: number, cross = false, chain = false) => {
     const home3 = mkdtempSync(join(tmpdir(), `ox-accept-race${n}-`));
     writeFileSync(join(home3, "key"), `${shared.toHex()}\n`, { mode: 0o600 });
     const port3 = await freePort(), hostPort3 = await freePort(), p2pPort3 = await freePort();
@@ -759,7 +779,7 @@ try {
         return t;
       };
       const b64 = (b: number[] | Uint8Array) => ({ "/": { bytes: Buffer.from(b).toString("base64").replace(/=+$/, "") } });
-      type Rec = { ok?: boolean; reason?: string; detail?: string; txid?: string; pool?: { outpoint?: string }; beef?: unknown };
+      type Rec = { ok?: boolean; reason?: string; detail?: string; txid?: string; pool?: { outpoint?: string }; beef?: unknown; tx?: unknown };
       /** One leg over HTTP to a host's swap route, POST /@<B>/amm/swap (host/relay.ts): {status, answer}. */
       const relayVia = async (origin: string, t: InstanceType<typeof Transaction>, pool: string, peer = peerId, signal?: AbortSignal): Promise<Rec & { status?: number }> => {
         const res = await fetch(`${origin}/@${B}/amm/swap`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ funding: b64(ft.toAtomicBEEF()), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId: peer }), ...(signal ? { signal } : {}) });
@@ -799,6 +819,60 @@ try {
         }
         return won[0]?.txid;
       };
+      if (chain) {
+        // 0.18.0 (skein 0.3.3, skein-amm 0.45.0): FIVE swaps in a row on the pool by ONE taker, each funded by the
+        // previous swap's sats change (an output of a transaction the token's topic admitted), the page's own code
+        // building each leg's funding BEEF (`fundingBeef` over a wallet-like BEEF that grows with every swap, with
+        // `topicAdmitted`): every request BEEF (the host's `requestBeef`) and every reply `beef` under CHAIN_BOUND.
+        const amm = await ammClient();
+        check(!!amm, `chain: @dcasegr/amm-client (0.45.0) loads for the page's own leg code (${amm ? "ok" : "install its tarball: npm install --no-save --legacy-peer-deps <engine.tgz> <client.tgz>"})`);
+        if (amm) {
+          const { requestBeef } = await import("../../host/relay.ts");
+          const assetHex = Buffer.from(ftx.get("token_deploy")!.hash() as number[]).toString("hex");
+          const takerPkh = Buffer.from(taker.toPublicKey().toHash() as number[]).toString("hex");
+          const S4 = amm.sdk4;
+          const taker4 = S4.PrivateKey.fromHex(taker.toHex());
+          const to4 = (t: InstanceType<typeof Transaction>) => S4.Transaction.fromBinary(t.toBinary());
+          const signTaker = () => ({ sign: (tx: any, i: number) => new S4.P2PKH().unlock(taker4).sign(tx, i), estimateLength: async () => 107 });
+          let poolTx: InstanceType<typeof Transaction> = pd, fundTx: InstanceType<typeof Transaction> = ft, fundVout = 5;
+          // The taker's wallet BEEF (the client's sdk): what a wallet hands the page for its rows, growing with every swap.
+          const wallet = S4.Beef.fromBinary(Array.from(ft.toBEEF()));
+          const sizes: Array<{ request: number; before: number; reply: number }> = [];
+          const postLeg = async (funding: number[], t: InstanceType<typeof Transaction>, pool: string): Promise<Rec> => {
+            const res = await fetch(`${R3}/@${B}/amm/swap`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ funding: b64(funding), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId }) });
+            return await res.json() as Rec;
+          };
+          const bytesOf = (x: unknown) => { const b = (x as { "/"?: { bytes?: string } } | undefined)?.["/"]?.bytes; return b === undefined ? undefined : Buffer.from(b, "base64"); };
+          const legOn = async (src: InstanceType<typeof Transaction>, vout: number) => {
+            const p4 = to4(poolTx), s4 = to4(src);
+            const call = await amm.PoolTemplate.swap({
+              pool: { txid: p4.id("hex"), vout: 0, satoshis: p4.outputs[0].satoshis, script: p4.outputs[0].lockingScript, sourceTransaction: p4 },
+              inputs: [{ txid: s4.id("hex"), vout, satoshis: s4.outputs[vout].satoshis, lockingScript: s4.outputs[vout].lockingScript, sourceTransaction: s4, unlock: signTaker() }],
+              amountIn: 2_000n, bsvIn: true, userPkh: takerPkh, commissionPkh: relayCom, changePkh: takerPkh, fee: { sats: 2_000 },
+            });
+            return Transaction.fromBinary(call.tx.toBinary());
+          };
+          for (let i = 1; i <= 5; i++) {
+            const t = await legOn(fundTx, fundVout);
+            const pool = `${poolTx.id("hex")}_0`;
+            const funding = amm.fundingBeef(wallet, fundTx.id("hex"), [fundTx.id("hex")], { poolTxid: poolTx.id("hex"), admitted: amm.topicAdmitted(assetHex, poolTx.id("hex")) }) as number[];
+            const before = amm.fundingBeef(wallet, fundTx.id("hex"), [fundTx.id("hex")]) as number[]; // the 0.17 shape: every source raw with its ancestry
+            const req = requestBeef(Uint8Array.from(funding), t).beef.length, req0 = requestBeef(Uint8Array.from(before), t).beef.length;
+            const got = await postLeg(funding, t, pool);
+            const signed = bytesOf(got.tx), beef = bytesOf(got.beef);
+            if (got.ok !== true || !signed) { check(false, `chain: swap ${i} accepted (${got.reason}: ${String(got.detail).slice(0, 200)})`); break; }
+            sizes.push({ request: req, before: req0, reply: beef?.length ?? -1 });
+            const st = Transaction.fromBinary(Array.from(signed));
+            wallet.mergeRawTx(st.toBinary());
+            poolTx = st;
+            fundTx = st;
+            fundVout = st.outputs.length - 1;
+            check(st.outputs[fundVout]!.lockingScript.toHex() === takerLock.toHex(), `chain: swap ${i} accepted (${st.id("hex").slice(0, 8)}…): request BEEF ${req} bytes (the 0.17 shape: ${req0}), reply beef ${beef?.length} bytes; its sats change the taker's, funding the next`);
+          }
+          const worst = sizes.reduce((m, x) => Math.max(m, x.request, x.reply), 0);
+          check(sizes.length === 5 && worst <= CHAIN_BOUND, `chain: five swaps in a row on one pool by one taker, every request and reply BEEF ≤ ${CHAIN_BOUND} bytes (largest ${worst}; requests ${sizes.map((x) => x.request).join(", ")}; replies ${sizes.map((x) => x.reply).join(", ")}; the 0.17 shape's requests ${sizes.map((x) => x.before).join(", ")})`);
+        }
+      } else {
       // n on the deployed pool output.
       const w1 = await race(n, 0, `${pd.id("hex")}_0`);
       // Two more on the same output afterwards: the pool is spent and nothing in flight — pool_spent at once, none signed.
@@ -836,6 +910,7 @@ try {
         const gone = await relay(await swapOn(3), `${pd.id("hex")}_0`);
         const ms = Date.now() - t0;
         check(gone.status === 200 && gone.ok === false && gone.reason === "unreachable" && ms < 10_000, `cross host: the validator's host stopped → unreachable at once (${ms} ms: ${String(gone.detail).slice(0, 120)})`);
+      }
       }
     } finally {
       await z?.stop().catch(() => {});
@@ -880,6 +955,7 @@ try {
   await raceHost(2);
   await raceHost(3);
   await raceHost(2, true);
+  await raceHost(5, false, true);
 
   // ------------------------------------------------ disable, enable again
   await send({ fn: "disable", args: { tokenId: A } });

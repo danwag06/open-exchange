@@ -4,7 +4,9 @@
 //
 //   POST /@<tokenId>/amm/swap      a plain route (no BRC-104 session, as /submit is plain)
 //   body    {funding, swap, pool, validator, peerId}      JSON; bytes as DAG-JSON bytes ({"/": {"bytes": <base64>}})
-//             funding    the taker's funding transaction, the wallet's Atomic BEEF (its ancestry with it)
+//             funding    the taker's funding transaction, the wallet's Atomic BEEF (its ancestry with it; 0.18.0, skein-amm
+//                        0.45.0: what the token's topic admitted — the pool's transaction, a swap taken in — by txid alone,
+//                        the validator's instance holds it and skein 0.3.3's door admits a txid-only entry for a held one)
 //             swap       the raw swap, the validator's signature slot OP_0
 //             pool       the pool outpoint it spends, <txid>_<vout>
 //             validator  the pool's ValidatorIdentity, 33 bytes
@@ -211,7 +213,8 @@ export function commissionRule(swap: Transaction, ours: Uint8Array): { reason: s
 /**
  * The one BEEF the validator gets: the ancestry (in the funding BEEF) of the funding transaction and of every swap
  * input whose source that BEEF holds, the swap last as the subject; V2, parents first. A funding given raw: that
- * transaction and the swap.
+ * transaction and the swap. A txid-only entry stays one (0.18.0: the page names what the topic admitted by txid);
+ * the walk stops at it, as at a proven one.
  */
 export function requestBeef(funding: Uint8Array, swap: Transaction): { beef: number[]; fundingTxid: string } {
   const magic = funding.length >= 4 ? Buffer.from(funding.subarray(0, 4)).readUInt32LE(0) : 0;
