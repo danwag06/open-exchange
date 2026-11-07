@@ -18,28 +18,36 @@
   ],
   "tags": [
     {
-      "name": "pools"
+      "name": "pools",
+      "description": "A token's live pools, its validator and market terms, and the pool event feeds."
     },
     {
-      "name": "history"
+      "name": "history",
+      "description": "Trades, candles, stats, positions, holders and the pools over time."
     },
     {
-      "name": "fees"
+      "name": "fees",
+      "description": "Pool positions and the fees owed to validators and commission holders."
     },
     {
-      "name": "chain"
+      "name": "chain",
+      "description": "Outpoint spends and transaction BEEFs from the chain state."
     },
     {
-      "name": "swaps"
+      "name": "swaps",
+      "description": "A swap leg, relayed by the host to its validator."
     },
     {
-      "name": "tokens"
+      "name": "tokens",
+      "description": "The instance's token, the exchange's token list and discovery's 1Color listings."
     },
     {
-      "name": "host"
+      "name": "host",
+      "description": "The instance card, the claimant, defaults, discovery, paid enable and the exchange's wallet."
     },
     {
-      "name": "docs"
+      "name": "docs",
+      "description": "This document and the reference page rendered from it."
     }
   ],
   "paths": {
@@ -1286,6 +1294,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "want ?id=<txid>: 64 hex characters"
                 }
               }
             }
@@ -1296,6 +1307,9 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": "unknown transaction"
                 }
               }
             }
@@ -2063,7 +2077,9 @@
                     "dec": 5,
                     "iconUrl": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0/icon",
                     "txid": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
-                    "vout": 0
+                    "vout": 0,
+                    "amount": 500000000000,
+                    "height": 1767214
                   },
                   {
                     "tokenId": "b4dc735a00000000000000000000000000000000000000000000000000000000_0",
@@ -2211,6 +2227,10 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "message": "not found"
                 }
               }
             }
@@ -2268,6 +2288,10 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "message": "not found"
                 }
               }
             }
@@ -2558,6 +2582,26 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                },
+                "example": {
+                  "openapi": "3.1.0",
+                  "info": {
+                    "title": "Open Exchange public read API",
+                    "version": "0.18.0"
+                  },
+                  "servers": [
+                    {
+                      "url": "{origin}"
+                    }
+                  ],
+                  "paths": {
+                    "/amm/pools": {
+                      "get": {
+                        "operationId": "P1",
+                        "summary": "Every enabled token's live pools"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -2584,12 +2628,67 @@
               "text/html": {
                 "schema": {
                   "type": "string"
-                }
+                },
+                "example": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Open Exchange API</title>\n…"
               }
             }
           }
         },
         "x-route": "P18b",
+        "x-cache": "as the swap pages are served",
+        "x-answered-by": "files in the swap app's www/"
+      }
+    },
+    "/api/skill.md": {
+      "get": {
+        "operationId": "P18c",
+        "summary": "The agent skill",
+        "description": "The open-exchange agent skill (SKILL.md: frontmatter, then markdown): how to read the market, run a swap, deploy and close pools, list a token, run and administer an exchange, and recover stuck swaps with `@dcasegr/amm-client`. Its references are at `/api/skill/references/<name>.md` and its examples at `/api/skill/examples/<name>`. Shipped with the `open-exchange` package (`skills/open-exchange`, its route table and versions regenerated from this document and package.json at build); mirrored from b-open-io/1sat-sdk `skills/open-exchange`.",
+        "tags": [
+          "docs"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Markdown.",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "---\nname: open-exchange\ndescription: \"This skill should be used when building against, operating, or testing an Open Exchange …\"\n---\n\n# Open Exchange\n…"
+              }
+            }
+          }
+        },
+        "x-route": "P18c",
+        "x-cache": "as the swap pages are served",
+        "x-answered-by": "files in the swap app's www/"
+      }
+    },
+    "/api/llms.txt": {
+      "get": {
+        "operationId": "P18d",
+        "summary": "llms.txt",
+        "description": "A short index for language models (the llms.txt convention, llmstxt.org): the exchange in one line and links to the reference page, this document, the agent skill and the README's first-token checklist.",
+        "tags": [
+          "docs"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Markdown, served as plain text.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Open Exchange\n\n> A 1Color (BRC-162) token AMM host on skein: liquidity providers' constant-product pools, a validator signing each swap leg, and a public read API over plain HTTP.\n\n…"
+              }
+            }
+          }
+        },
+        "x-route": "P18d",
         "x-cache": "as the swap pages are served",
         "x-answered-by": "files in the swap app's www/"
       }
@@ -2702,6 +2801,20 @@
                         }
                       }
                     }
+                  }
+                },
+                "example": {
+                  "fn": "enable",
+                  "result": {
+                    "tokenId": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "topic": "tm_color_959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0",
+                    "sym": "AMM2",
+                    "dec": 5,
+                    "status": "enabled",
+                    "since": 1793750400000,
+                    "paidBy": "02b7e3c1f0a95d4e8c6b2a17f3d9e05c4a8b6f2e1d3c7a9b5e0f4d2c8a6b1e3f70",
+                    "paymentTxid": "4c1e8a2f9b7d3e05a6c4b2d1f0e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1",
+                    "satoshisPaid": 1000
                   }
                 }
               }
@@ -2896,6 +3009,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "code": "ERR_BAD_REQUEST",
+                  "description": "want ?n=<the withdrawal's number, from 1>"
                 }
               }
             }
@@ -2906,6 +3024,11 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                },
+                "example": {
+                  "status": "error",
+                  "code": "ERR_NOT_FOUND",
+                  "description": "no withdrawal 2"
                 }
               }
             }

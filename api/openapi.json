@@ -2639,6 +2639,60 @@
         "x-answered-by": "files in the swap app's www/"
       }
     },
+    "/api/skill.md": {
+      "get": {
+        "operationId": "P18c",
+        "summary": "The agent skill",
+        "description": "The open-exchange agent skill (SKILL.md: frontmatter, then markdown): how to read the market, run a swap, deploy and close pools, list a token, run and administer an exchange, and recover stuck swaps with `@dcasegr/amm-client`. Its references are at `/api/skill/references/<name>.md` and its examples at `/api/skill/examples/<name>`. Shipped with the `open-exchange` package (`skills/open-exchange`, its route table and versions regenerated from this document and package.json at build); mirrored from b-open-io/1sat-sdk `skills/open-exchange`.",
+        "tags": [
+          "docs"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Markdown.",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "---\nname: open-exchange\ndescription: \"This skill should be used when building against, operating, or testing an Open Exchange …\"\n---\n\n# Open Exchange\n…"
+              }
+            }
+          }
+        },
+        "x-route": "P18c",
+        "x-cache": "as the swap pages are served",
+        "x-answered-by": "files in the swap app's www/"
+      }
+    },
+    "/api/llms.txt": {
+      "get": {
+        "operationId": "P18d",
+        "summary": "llms.txt",
+        "description": "A short index for language models (the llms.txt convention, llmstxt.org): the exchange in one line and links to the reference page, this document, the agent skill and the README's first-token checklist.",
+        "tags": [
+          "docs"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Markdown, served as plain text.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "# Open Exchange\n\n> A 1Color (BRC-162) token AMM host on skein: liquidity providers' constant-product pools, a validator signing each swap leg, and a public read API over plain HTTP.\n\n…"
+              }
+            }
+          }
+        },
+        "x-route": "P18d",
+        "x-cache": "as the swap pages are served",
+        "x-answered-by": "files in the swap app's www/"
+      }
+    },
     "/amm/enable": {
       "post": {
         "operationId": "W1",

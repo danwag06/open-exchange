@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build",
+    "prepack": "node scripts/skill-sync.js --check && npm run build",
     "typecheck": "tsc -p tsconfig.json",
     "accept": "node --experimental-strip-types --no-warnings scripts/accept/ox-accept.ts"
   },

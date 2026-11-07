@@ -1,0 +1,15 @@
+# Open Exchange
+
+> A 1Color (BRC-162) token AMM host on skein: liquidity providers' constant-product pools, a validator signing each swap leg, and a public read API over plain HTTP.
+
+The links are relative to this exchange's origin. Reads are plain GETs, no auth; writes go through the overlay (`/submit`, `/lookup`), signed admin messages and the swap relay, best driven by `@dcasegr/amm-client`.
+
+## Docs
+
+- [API reference](/api/): the reference page, rendered from the OpenAPI document
+- [OpenAPI document](/api/openapi.json): OpenAPI 3.1, every public route with examples
+- [Agent skill](/api/skill.md): how to read the market, swap, deploy pools, list a token and run an exchange; references and examples under `/api/skill/`
+
+## Optional
+
+- [Your first token](https://github.com/shruggr/open-exchange#your-first-token-an-admins-checklist): an admin's checklist (claim, terms, discovery, enable)

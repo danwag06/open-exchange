@@ -1,7 +1,8 @@
 <!doctype html>
 <!-- /api/, the reference page: ./openapi.json rendered by Scalar's API Reference (one pinned
      script from the CDN; without it, the link below). The try-it console's {origin} defaults to
-     the origin that serves the page, so requests go to this exchange. -->
+     the origin that serves the page, so requests go to this exchange. The line above it links the
+     agent skill (./skill.md, from skills/open-exchange) and ./llms.txt. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -11,9 +12,11 @@
   body { margin: 0; font: 15px/1.5 system-ui, sans-serif; }
   .darklight-reference a[href*="utm_source=powered-by"] { display: none; }
   #fallback { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  #agents { margin: 0; padding: 6px 16px; font-size: 13px; text-align: right; border-bottom: 1px solid #e5e5e5; }
 </style>
 </head>
 <body>
+<p id="agents">For agents: the <a href="./skill.md">agent skill</a> (SKILL.md) and <a href="./llms.txt">llms.txt</a></p>
 <div id="app"></div>
 <p id="fallback">Open Exchange API: the reference viewer did not load. The spec is <a href="./openapi.json">openapi.json</a> (OpenAPI 3.1).</p>
 <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.77.0"></script>
