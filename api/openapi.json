@@ -2077,7 +2077,9 @@
                     "dec": 5,
                     "iconUrl": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c_0/icon",
                     "txid": "959bebef5c0a3e8a1f0c8c1a6c2b7d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
-                    "vout": 0
+                    "vout": 0,
+                    "amount": 500000000000,
+                    "height": 1767214
                   },
                   {
                     "tokenId": "b4dc735a00000000000000000000000000000000000000000000000000000000_0",
