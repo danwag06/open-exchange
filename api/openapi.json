@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Open Exchange public read API",
-    "version": "0.17.1",
+    "version": "0.17.2",
     "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/…`. Each operation carries `x-cache` (its class) and `x-answered-by`."
   },
   "servers": [
@@ -1225,7 +1225,7 @@
       "get": {
         "operationId": "P9",
         "summary": "A transaction's BEEF",
-        "description": "The transaction's Atomic BEEF from the chain state, as bytes, with EVERY input's source transaction in it (0.17.1, skein-amm 0.44.2): each source with its BUMP when mined or its ancestry back to proven transactions when not, then the transaction itself without a BUMP of its own, mined or not (an Atomic BEEF cannot carry a proven subject's sources). A wallet takes it in as it is. 404 when the chain state lacks an input's source.",
+        "description": "The transaction's Atomic BEEF from the chain state (its ancestry back to proven transactions), as bytes.",
         "tags": [
           "chain"
         ],
