@@ -6,7 +6,7 @@
 #   AMM_DIR=<a skein-amm checkout at the tag> scripts/pool-code.sh     (default ../skein-amm)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-AMM_TAG=v0.44.1
+AMM_TAG=v0.44.2
 AMM_DIR="${AMM_DIR:-$(pwd)/../skein-amm}"
 want="$(git -C "$AMM_DIR" rev-parse "${AMM_TAG}^{commit}" 2>/dev/null || true)"
 have="$(git -C "$AMM_DIR" rev-parse HEAD)"
