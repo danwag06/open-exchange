@@ -199,6 +199,33 @@ message `{fn: "claim"}` in box `amm/claim`) becomes the admin: the host grants i
 and it enables tokens and sets terms. It is not root: the host's key stays swap's root. A second
 claim is refused. `GET <swap>/amm/admin` answers `{claimant, since}`, or `{}`.
 
+## Your first token (an admin's checklist)
+
+The host needs no settings, but a fresh exchange takes no pool until its admin has done four
+things, in this order. Each is one message from the admin's wallet; `@dcasegr/amm-client` has a
+method for each, and the Settings page does the same from Yours.
+
+1. **Claim** swap: `claimExchange()` (the message `{fn: "claim"}` in box `amm/claim`). The first
+   wallet wins; `GET /amm/admin` names it.
+2. **Default terms**: `setDefaultTerms({lpBps, validatorBps, commissionBps, minLegSats})`
+   (`{fn: "defaults", args: {terms}}`). Until terms exist a token instance is a market only:
+   `/@<token>/amm/terms` answers `validator: null`, `validatorTerms()` is `NO_VALIDATOR`, and
+   `deployPosition` is refused. A token enabled before the defaults were set needs its own
+   `setTokenTerms(tokenId, terms)` (`{fn: "terms"}`); the defaults apply to later enables.
+   The client's input names are `lpBps` / `validatorBps` / `commissionBps`; the wire and the
+   reads say `lpFeeBps` / `validatorFeeBps` / `commissionBps`.
+3. **Discovery on**: `setDiscovery(true)` (`{fn: "discovery", args: {on: true}}`). A 1Color
+   deploy is submitted to `tm_color` at this origin, which is the discovery instance; off, the
+   deploy is refused and `/@discovery/1color/tokens` knows nothing.
+4. **Enable** the token: the admin's free `enableToken(tokenId)` (`{fn: "enable"}`; the host finds
+   the deploy's BEEF in the admin's wallet or on discovery), or anyone's paid `enableTokenPaid`
+   once a price is set with `setEnablePrice(sats)`. `GET /amm/tokens` then lists it and
+   `/@<token>/amm/pools` shows the host's validator beating.
+
+After that a pool can be deployed and swapped. Right after start the `/amm/*` routes may answer
+empty for a second or two while the instances come up; `/.well-known/skein` answering is not yet
+"ready".
+
 ## Upgrade
 
 ```
