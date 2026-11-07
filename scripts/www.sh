@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 OX="$(pwd)"
-AMM_TAG=v0.45.0
+AMM_TAG=v0.46.1
 AMM_DIR="${AMM_DIR:-$OX/../skein-amm}"
 want="$(git -C "$AMM_DIR" rev-parse "${AMM_TAG}^{commit}")"
 have="$(git -C "$AMM_DIR" rev-parse HEAD)"

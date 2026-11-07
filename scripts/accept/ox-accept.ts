@@ -33,7 +33,7 @@
 //                          a pool, a sats-in and a token-in Swap, the LP's Close; the host's key is the fixtures'
 //                          validator identity, so B's pool is listed under a beating validator): the pool event feeds
 //                          /@<B>/amm/events and /amm/events send deploy, swap, swap, close (nothing on connect; A's
-//                          feed none); /@<B>/amm/pools/at, /pools/history, /trades, /candles (fill and market), /stats
+//                          feed none); /@<B>/amm/pools/at, /pools/history (outpoint starts strictly after that output), /trades, /candles (fill and market), /stats
 //                          (price over the listed pools); the host's /amm/stats, /amm/positions?pool=, /amm/spends;
 //                          B's holders; then B's other lineage on a SECOND host (the fixtures' swap_token_change
 //                          competes with swap_tokens_in): deploy → sats-in swap → a swap WITH token change → its close
@@ -44,8 +44,8 @@
 //                          CROSS-HOST race (a relaying host of another key) → the same, the relaying host's overlay
 //                          holding the accepted swap when it answers; the validator's host stopped → unreachable at once
 //   five swaps in a row  → (0.18.0) on a host of its own: one taker, five swaps on one pool, each funded by the previous
-//                          swap's change; each leg's funding BEEF from the page's own code (skein-amm 0.45.0
-//                          `fundingBeef`): what the topic admitted by txid; every request and reply BEEF ≤ CHAIN_BOUND
+//                          swap's change; each leg's funding BEEF from the page's own code (skein-amm 0.46.1
+//                          `fundingBeef`, the 0.45.0 function): what the topic admitted by txid; every request and reply BEEF ≤ CHAIN_BOUND
 //   swap's pages         → a restart with a packaged swap app of another version installs it into swap (as root),
 //                          the same version installs nothing; swap's state and the claimant's grant kept
 //   every store replays to itself — by the NATIVE reference (`skein-kernel replay`, skein's
@@ -82,7 +82,7 @@ const { keyWallet } = await skein<typeof import("@dcasegr/skein/dist/wallet.js")
 const { FakeArcade } = await skein<typeof import("@dcasegr/skein/dist/host/fake-arcade.js")>("src/host/fake-arcade.ts");
 /** 0.18.0: the largest request or reply BEEF the five-swap chain may carry (bytes): a swap alone is ~12.6 KB here. */
 const CHAIN_BOUND = 16_000;
-/** The page's own leg code (skein-amm 0.45.0's @dcasegr/amm-client: PoolTemplate, fundingBeef, topicAdmitted), when installed. */
+/** The page's own leg code (skein-amm 0.46.1's @dcasegr/amm-client: PoolTemplate, fundingBeef, topicAdmitted), when installed. */
 async function ammClient(): Promise<{ PoolTemplate: any; fundingBeef: any; topicAdmitted: any; sdk4: any } | undefined> {
   try {
     const entry = fileURLToPath(import.meta.resolve("@dcasegr/amm-client"));
@@ -587,6 +587,9 @@ try {
   const page1 = await getJson(`/@${B}/amm/pools/history?from=0&limit=1`) as { events?: unknown[]; next?: string } | undefined;
   const page2 = page1?.next ? await getJson(`/@${B}/amm/pools/history?from=0&limit=3&after=${page1.next}`) as { events?: Array<Record<string, unknown>>; next?: unknown } | undefined : undefined;
   check(page1?.events?.length === 1 && typeof page1.next === "string" && page2?.events?.map((e) => e.kind).join() === "swap,swap,close" && page2.next === null, "…?limit=1 then ?after=<next>: the rest of the window, once each");
+  const histAfterDeploy = await getJson(`/@${B}/amm/pools/history?outpoint=${poolB}`) as { events?: Array<Record<string, unknown>>; next?: unknown } | undefined;
+  const histAfterBuy = await getJson(`/@${B}/amm/pools/history?outpoint=${opOf("swap_bsv_in")}`) as { events?: Array<Record<string, unknown>> } | undefined;
+  check(histAfterDeploy?.events?.map((e) => e.kind).join() === "swap,swap,close" && histAfterDeploy.next === null && histAfterBuy?.events?.map((e) => e.kind).join() === "swap,close" && (await get(`/@${B}/amm/pools/history?outpoint=${"ab".repeat(32)}_0`)).status === 404, `…?outpoint= starts strictly after that output (deploy → ${histAfterDeploy?.events?.map((e) => e.kind).join()}; first swap → ${histAfterBuy?.events?.map((e) => e.kind).join()}); an unknown outpoint is 404`);
 
   const tr = await fetch(`${R}/@${B}/amm/trades`);
   const trj = await tr.json().catch(() => ({})) as { trades?: Array<Record<string, unknown>>; next?: unknown };
@@ -825,7 +828,7 @@ try {
         // building each leg's funding BEEF (`fundingBeef` over a wallet-like BEEF that grows with every swap, with
         // `topicAdmitted`): every request BEEF (the host's `requestBeef`) and every reply `beef` under CHAIN_BOUND.
         const amm = await ammClient();
-        check(!!amm, `chain: @dcasegr/amm-client (0.45.0) loads for the page's own leg code (${amm ? "ok" : "install its tarball: npm install --no-save --legacy-peer-deps <engine.tgz> <client.tgz>"})`);
+        check(!!amm, `chain: @dcasegr/amm-client (0.46.1) loads for the page's own leg code (${amm ? "ok" : "install its tarball: npm install --no-save --legacy-peer-deps <engine.tgz> <client.tgz>"})`);
         if (amm) {
           const { requestBeef } = await import("../../host/relay.ts");
           const assetHex = Buffer.from(ftx.get("token_deploy")!.hash() as number[]).toString("hex");

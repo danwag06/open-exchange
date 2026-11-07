@@ -1,6 +1,6 @@
 {
   "name": "open-exchange",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "The Open Exchange: an application host on skein's host \u2014 the swap instance's facts materialized as token instances (shruggr/open-exchange#1, shruggr/skein#164). Runs with node alone: skein's host loads its kernel as wasm.",
   "type": "module",
   "bin": {
@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@dcasegr/skein": "0.3.3",
-    "@dcasegr/amm-engine": "0.45.0",
+    "@dcasegr/amm-engine": "0.46.1",
     "@bsv/sdk": "^2.8.6"
   },
   "devDependencies": {

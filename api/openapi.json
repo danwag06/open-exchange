@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Open Exchange public read API",
-    "version": "0.18.0",
+    "version": "0.18.1",
     "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/…`. Each operation carries `x-cache` (its class) and `x-answered-by`."
   },
   "servers": [
@@ -690,7 +690,7 @@
       "get": {
         "operationId": "H8",
         "summary": "The pool history",
-        "description": "The raw pool history rows with `from ≤ at < to` (both optional, ms), oldest first (by time, then pool id, then the pool's order); `pool` one pool's rows; `limit` 1 to 500 (default 500). Forward paging: `next` is the last row's cursor when more rows remain in the window (else null), passed back as `after`.",
+        "description": "The raw pool history rows with `from ≤ at < to` (both optional, ms), oldest first (by time, then pool id, then the pool's order); `pool` one pool's rows; `limit` 1 to 500 (default 500). Forward paging: `next` is the last row's cursor when more rows remain in the window (else null), passed back as `after`. `outpoint` is a pool output this index holds (`<txid>_<vout>` or `<txid>.<vout>`): the scan starts strictly after that record. An unknown outpoint is 404.",
         "tags": [
           "history"
         ],
@@ -747,6 +747,15 @@
             "in": "query",
             "required": false,
             "description": "A cursor (`next`): the rows after it.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "outpoint",
+            "in": "query",
+            "required": false,
+            "description": "A pool output this index holds, `<txid>_<vout>` or `<txid>.<vout>`. The scan starts strictly after that record. Unknown is 404.",
             "schema": {
               "type": "string"
             }
@@ -826,11 +835,21 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "No pool output at this outpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "x-route": "H8",
         "x-cache": "state",
-        "x-answered-by": "amm-p2p (the pool lookup's history, skein-amm 0.40.0)"
+        "x-answered-by": "amm-p2p (the pool lookup's history, skein-amm 0.46.1)"
       }
     },
     "/@{token}/amm/positions": {
