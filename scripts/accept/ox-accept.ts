@@ -687,7 +687,8 @@ try {
       `SKEIN_ARC_URL=${arcade.url}`, "SKEIN_ARC_TOKEN=t", `SKEIN_ARC_EVENTS_URL=${arcade.eventsUrl}`, `SKEIN_LIBP2P_LISTEN=/ip4/127.0.0.1/tcp/${p2pPort3}`,
       ...(kernel ? [`SKEIN_KERNEL_BIN=${kernel}`] : []), "",
     ].join("\n"));
-    const env3: Env = { vars: { HOME: process.env.HOME, PATH: process.env.PATH, SKEIN_HOME: home3 }, out: (l) => { if (process.env.VERBOSE) process.stdout.write(`  3| ${l}\n`); }, err: (l) => { process.stdout.write(`  3! ${l}\n`); } };
+    const lines3: string[] = [];
+    const env3: Env = { vars: { HOME: process.env.HOME, PATH: process.env.PATH, SKEIN_HOME: home3 }, out: (l) => { lines3.push(l); if (process.env.VERBOSE) process.stdout.write(`  3| ${l}\n`); }, err: (l) => { process.stdout.write(`  3! ${l}\n`); } };
     const R3 = `http://127.0.0.1:${port3}`;
     const get3 = async (path: string) => { const r = await fetch(`${R3}${path}`); return r.status === 200 ? await r.json() as unknown : undefined; };
     let z: Running | undefined;
@@ -759,14 +760,14 @@ try {
       };
       const b64 = (b: number[] | Uint8Array) => ({ "/": { bytes: Buffer.from(b).toString("base64").replace(/=+$/, "") } });
       type Rec = { ok?: boolean; reason?: string; detail?: string; txid?: string; pool?: { outpoint?: string }; beef?: unknown };
-      /** One leg through a host's relay (host/relay.ts, what POST /@<B>/amm/swap runs): {status, answer}. */
-      const relayVia = async (r: Running, t: InstanceType<typeof Transaction>, pool: string): Promise<Rec & { status?: number }> => {
-        const body = new TextEncoder().encode(JSON.stringify({ funding: b64(ft.toAtomicBEEF()), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId }));
-        const res = await r.relay.swap(B, body);
-        return { status: res.status, ...(JSON.parse(new TextDecoder().decode(res.body)) as Rec) };
+      /** One leg over HTTP to a host's swap route, POST /@<B>/amm/swap (host/relay.ts): {status, answer}. */
+      const relayVia = async (origin: string, t: InstanceType<typeof Transaction>, pool: string, peer = peerId, signal?: AbortSignal): Promise<Rec & { status?: number }> => {
+        const res = await fetch(`${origin}/@${B}/amm/swap`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ funding: b64(ft.toAtomicBEEF()), swap: b64(t.toBinary()), pool, validator: b64(Buffer.from(SHARED, "hex")), peerId: peer }), ...(signal ? { signal } : {}) });
+        return { status: res.status, ...(await res.json().catch(() => ({})) as Rec) };
       };
       const via = cross ? xh!.run : z;
-      const relay = (t: InstanceType<typeof Transaction>, pool: string) => relayVia(via, t, pool);
+      const viaOrigin = cross ? xh!.R : R3;
+      const relay = (t: InstanceType<typeof Transaction>, pool: string) => relayVia(viaOrigin, t, pool);
       const tipOf = async (r: Running) => String(await (await r.host.router.hydrate(B)).kernel.tip());
       const nextOf = (g: Rec) => (g.pool as { outpoint?: string } | undefined)?.outpoint;
 
@@ -804,6 +805,28 @@ try {
       if (w1 && n === 2 && !cross) {
         const late = await Promise.all([2, 3].map(async (k) => relay(await swapOn(k), `${pd.id("hex")}_0`)));
         check(late.every((g) => g.ok === false && g.reason === "pool_spent" && nextOf(g) === `${w1}_0`), `…two more on the spent output afterwards: refused pool_spent with the new state, none signed (${late.map((g) => g.reason).join(", ")})`);
+      }
+      if (!cross && n === 3) {
+        // The page's connection is the only timer: a call whose dial hangs (a TCP peer that accepts and never speaks),
+        // the page's request closed mid-call → the host's call cancelled at once, nothing answered, nothing in B's log.
+        const hold = createServer((c) => { c.on("error", () => {}); });
+        await new Promise<void>((r) => hold.listen(0, "127.0.0.1", () => r()));
+        const holdPort = (hold.address() as { port: number }).port;
+        const kpub = new PrivateKey("5d".repeat(32), 16).toPublicKey().encode(true) as number[];
+        const silentPeer = (sdk as unknown as { Utils: { toBase58: (b: number[]) => string } }).Utils.toBase58([0x00, 0x25, 0x08, 0x02, 0x12, 0x21, ...kpub]);
+        const t0 = await tipOf(z);
+        const ac = new AbortController();
+        const before = lines3.length;
+        const p = relayVia(R3, await swapOn(2), `${pd.id("hex")}_0`, `/ip4/127.0.0.1/tcp/${holdPort}/p2p/${silentPeer}`, ac.signal).then(() => "answered", (e: Error) => `the page's fetch: ${e.name}`);
+        await sleep(400);
+        const closedAt = Date.now();
+        ac.abort();
+        const fetchEnd = await p;
+        const line = await until("the host's call cancelled", () => lines3.slice(before).find((l) => /cancelled/.test(l)), 5_000);
+        const ms = Date.now() - closedAt;
+        hold.close();
+        check(fetchEnd === "the page's fetch: AbortError" && !!line && ms < 3_000 && (await tipOf(z)) === t0,
+          `a request closed mid-call (its dial held by a peer that never speaks): the host's call cancelled at once (${ms} ms: ${String(line).slice(0, 140)}); B's log unchanged`);
       }
       if (cross) {
         // The validator's host stopped: the next call from the relaying host fails at once, named.

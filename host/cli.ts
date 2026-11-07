@@ -85,12 +85,13 @@ export async function startExchange(sk: Skein, env: Env, o: { router?: Record<st
   // 0.15.0: GET /amm/wallet and /amm/wallet/tx (wallet.ts), the host's reads of swap's core wallet and its withdrawals.
   let walletHost: Router | undefined;
   // 0.17.0 (skein-amm 0.44.0): POST /@<tokenId>/amm/swap, the swap relay (relay.ts), the request's close its only timer.
-  // PENDING (skein): the Router hands an application host GETs only (`appRead`) and a request carries no close
-  // signal, so this route is not reached on skein 0.3.1; `req.signal` is the close signal it needs.
+  // skein 0.3.2: the hook is offered EVERY method, and `req.signal` fires when the client closes before the answer.
+  // The reads below are GETs only: a POST to one of their routes is forwarded to the instance as before.
   let relay: Relay | undefined;
   const appRead = async (h: string, route: string, url: URL, req: Parameters<Pools["appRead"]>[3]) =>
-    (await relay?.route(h, route, req, (req as { signal?: AbortSignal }).signal)) ??
-    (walletHost ? await walletRead(sk, walletHost, SWAP, h, route, url) : undefined) ?? await pools?.appRead(h, route, url, req);
+    (await relay?.route(h, route, req, req.signal)) ??
+    (req.method !== "GET" ? undefined :
+      (walletHost ? await walletRead(sk, walletHost, SWAP, h, route, url) : undefined) ?? await pools?.appRead(h, route, url, req));
   const appEvent = (h: string, rec: Record<string, unknown>) => {
     if (pools?.poolEvent(h, rec)) return;
     if (ex) ex.event(h, rec); else early.push([h, rec]);

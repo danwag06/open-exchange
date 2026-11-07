@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Open Exchange public read API",
-    "version": "0.16.0",
+    "version": "0.17.0",
     "description": "Plain HTTP reads over the exchange's index: JSON unless the route says bytes; list parameters are comma-separated and answered one record per key in query order. Writes stay on the overlay protocol (`POST /submit`, BRC-22; `POST /lookup`, BRC-24) and on `/sendMessage` and `/call`; the host reads `/<app>/.live/<topic>` and `/<app>/.events` stay as they are. Cache classes: `state` = `Cache-Control: public, max-age=5`; `imm` = `public, max-age=31536000, immutable`, only for the bytes of a proven (mined) transaction, else `state`; `stream` = `text/event-stream`, no cache. `{token}` is a token id `<txid>_<vout>`; a token's routes are under its instance, `/@<token>/amm/…`. Each operation carries `x-cache` (its class) and `x-answered-by`."
   },
   "servers": [
@@ -1287,57 +1287,86 @@
         "x-answered-by": "amm-p2p"
       }
     },
-    "/@{token}/amm/swaps": {
-      "get": {
-        "operationId": "P10",
-        "summary": "A relayed swap's record",
-        "description": "The relay record as `amm.swap.status` answers it, unsigned (the signed `/call amm.swap.status` stays). The swap id is the sha256 of the swap, 64 hex characters.",
+    "/@{token}/amm/swap": {
+      "post": {
+        "operationId": "S1",
+        "summary": "Relay a swap leg to its validator (the host is the relay)",
+        "description": "The open-exchange host relays one swap leg (0.17.0, skein-amm 0.44.0: the instance logs facts, never attempts; nothing about the attempt is recorded). Plain (no BRC-104 session, as /submit). The host checks ONE rule, the exchange's commission: when the pool's CommissionBps > 0 the Swap call's commissionPkh must be hash160 of the token instance's key for [1, \"amm commission\"], key id \"relay\", counterparty anyone (the market's `commissionPkh` on /pools and /terms); a swap that fails it is answered `commission_missing` and nothing is relayed. Everything else is the validator's. The host signs the validator's package with the token instance's key, carries it on one libp2p stream (one request frame, one answer frame) to `peerId` — or, when `peerId` is this host's own node, hands it in as that node's inbound frame — submits a `beef` the reply carries to the token instance's overlay (another node's) and answers the validator's reply as it is. Any break in the call (dial refused, protocol not served, write failed, stream closed without an answer) is answered `unreachable` at once. The client's request is the only timer: when it closes the host stops (a dial in progress cancelled, a request not yet written never written, an open stream closed); once written, the validator answers on its stream and a signed swap reaches the overlay regardless. No retries, no record, no status read.",
         "tags": [
+          "host",
           "swaps"
         ],
         "parameters": [
           {
-            "name": "id",
-            "in": "query",
+            "name": "token",
+            "in": "path",
             "required": true,
-            "description": "The swap id.",
             "schema": {
               "type": "string"
             },
-            "example": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f"
+            "description": "`<txid>_<vout>`"
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SwapRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "The validator's reply as it is, or the host's own refusal (`commission_missing`) or break (`unreachable`)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SwapRecord"
+                  "$ref": "#/components/schemas/SwapReply"
                 },
-                "example": {
-                  "id": "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
-                  "status": "accepted",
-                  "funding": {
-                    "/": {
-                      "bytes": "..."
+                "examples": {
+                  "accepted": {
+                    "value": {
+                      "ok": true,
+                      "tx": {
+                        "/": {
+                          "bytes": "..."
+                        }
+                      },
+                      "txid": "d033883000000000000000000000000000000000000000000000000000000000",
+                      "beef": {
+                        "/": {
+                          "bytes": "..."
+                        }
+                      }
                     }
                   },
-                  "swap": {
-                    "/": {
-                      "bytes": "..."
+                  "pool_spent": {
+                    "value": {
+                      "ok": false,
+                      "reason": "pool_spent",
+                      "pool": {
+                        "outpoint": "9fd0000000000000000000000000000000000000000000000000000000000000_0",
+                        "bsvReserve": 1000995,
+                        "tokenReserve": 99900000
+                      }
                     }
                   },
-                  "pool": "277f9d52c1a0e4b3d2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1ecbc_0",
-                  "validator": {
-                    "/": {
-                      "bytes": "..."
+                  "commission_missing": {
+                    "value": {
+                      "ok": false,
+                      "reason": "commission_missing",
+                      "detail": "the commission pays 2222…, not 5555…"
                     }
                   },
-                  "expires": 1793750415000,
-                  "created": 1793750400000,
-                  "updated": 1793750401200,
-                  "txid": "d033883000000000000000000000000000000000000000000000000000000000"
+                  "unreachable": {
+                    "value": {
+                      "ok": false,
+                      "reason": "unreachable",
+                      "detail": "the dial was refused: …"
+                    }
+                  }
                 }
               }
             },
@@ -1346,34 +1375,28 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "public, max-age=5"
+                "description": "no-store"
               }
             }
           },
           "400": {
-            "description": "bad_id: 64 hex characters",
+            "description": "Not the shape (nothing relayed)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
           },
           "404": {
-            "description": "not_found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
+            "description": "No enabled token here"
+          },
+          "503": {
+            "description": "The commission key could not be had (nothing relayed)"
           }
         },
-        "x-route": "P10",
-        "x-cache": "state",
-        "x-answered-by": "amm-p2p"
+        "x-answered-by": "HOST"
       }
     },
     "/@{token}/amm/trades": {
@@ -2879,7 +2902,7 @@
     "schemas": {
       "Error": {
         "type": "object",
-        "description": "A refusal from an amm-p2p read (P3–P10): `{error}`, no Cache-Control.",
+        "description": "A refusal from an amm-p2p read (P3–P9): `{error}`, no Cache-Control.",
         "properties": {
           "error": {
             "type": "string"
@@ -3251,67 +3274,72 @@
           "closed"
         ]
       },
-      "SwapRecord": {
+      "SwapRequest": {
         "type": "object",
-        "description": "The relay record as `amm.swap.status` answers it, as dag-json (bytes are `{\"/\": {\"bytes\": <base64>}}`).",
+        "additionalProperties": false,
+        "description": "One leg; bytes are DAG-JSON bytes `{\"/\": {\"bytes\": <base64>}}`.",
         "properties": {
-          "id": {
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "pending",
-              "accepted",
-              "refused",
-              "timeout",
-              "failed"
-            ]
-          },
           "funding": {
-            "type": "object"
+            "type": "object",
+            "description": "the funding transaction's Atomic BEEF (every staged input's source with its ancestry)"
           },
           "swap": {
-            "type": "object"
+            "type": "object",
+            "description": "the raw swap, the validator's signature slot OP_0"
           },
           "pool": {
-            "type": "string"
+            "type": "string",
+            "description": "the pool outpoint it spends, `<txid>_<vout>`"
           },
           "validator": {
-            "type": "object"
+            "type": "object",
+            "description": "the pool's ValidatorIdentity, 33 bytes"
           },
-          "expires": {
-            "type": "integer"
-          },
-          "created": {
-            "type": "integer"
-          },
-          "updated": {
-            "type": "integer"
+          "peerId": {
+            "type": "string",
+            "description": "the validator's libp2p peer ID (the pools route's `validatorPeerId`)"
+          }
+        },
+        "required": [
+          "funding",
+          "swap",
+          "pool",
+          "validator",
+          "peerId"
+        ]
+      },
+      "SwapReply": {
+        "type": "object",
+        "description": "The validator's reply as it is (dag-json), or the host's `commission_missing` / `unreachable`.",
+        "properties": {
+          "ok": {
+            "type": "boolean"
           },
           "tx": {
-            "type": "object"
+            "type": "object",
+            "description": "accepted: the validator's signed swap"
           },
           "txid": {
             "type": "string"
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "description": "refused: the validator's reason (pool_spent, below_minimum, …), or the host's commission_missing / unreachable"
           },
           "detail": {
             "type": "string"
           },
-          "poolState": {
-            "type": "object"
+          "pool": {
+            "type": "object",
+            "description": "pool_spent: the pool's newest state"
+          },
+          "beef": {
+            "type": "object",
+            "description": "accepted: what the validator submitted; pool_spent: the newest pool's transaction"
           }
         },
         "required": [
-          "id",
-          "status",
-          "pool",
-          "validator",
-          "expires",
-          "created",
-          "updated"
+          "ok"
         ]
       },
       "TokenRecord": {
